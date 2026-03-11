@@ -1,0 +1,254 @@
+"""Floor Manager: the OFP conversation coordinator."""
+from __future__ import annotations
+
+import asyncio
+import logging
+import uuid
+from typing import Optional
+
+from openfloor import (
+    BotAgent,
+    Capability,
+    Conversation,
+    DialogEvent,
+    Envelope,
+    GrantFloorEvent,
+    Identification,
+    InviteEvent,
+    Manifest,
+    PublishManifestsEvent,
+    RequestFloorEvent,
+    RevokeFloorEvent,
+    Sender,
+    SupportedLayers,
+    TextFeature,
+    UninviteEvent,
+    UtteranceEvent,
+)
+
+from ofp_playground.bus.message_bus import MessageBus, FLOOR_MANAGER_URI
+from ofp_playground.floor.history import ConversationHistory, HistoryEntry
+from ofp_playground.floor.policy import FloorController, FloorPolicy
+from ofp_playground.renderer.terminal import TerminalRenderer
+
+logger = logging.getLogger(__name__)
+
+FLOOR_MANAGER_NAME = "Floor Manager"
+FLOOR_MANAGER_URI_STR = FLOOR_MANAGER_URI
+
+
+def make_floor_manager_manifest() -> Manifest:
+    return Manifest(
+        identification=Identification(
+            speakerUri=FLOOR_MANAGER_URI_STR,
+            serviceUrl="local://floor-manager",
+            organization="OFP Playground",
+            conversationalName=FLOOR_MANAGER_NAME,
+            role="convener",
+            synopsis="Manages the conversation floor and coordinates agents",
+        ),
+        capabilities=[
+            Capability(
+                keyphrases=["floor management", "conversation coordination"],
+                descriptions=["Manages multi-party OFP conversations"],
+                supportedLayers=SupportedLayers(input=["text"], output=["text"]),
+            )
+        ],
+    )
+
+
+class FloorManager:
+    """Central coordinator for OFP conversations.
+
+    Manages floor control, routes envelopes, and tracks conversation state.
+    """
+
+    def __init__(
+        self,
+        bus: MessageBus,
+        policy: FloorPolicy = FloorPolicy.SEQUENTIAL,
+        renderer: Optional[TerminalRenderer] = None,
+    ):
+        self._bus = bus
+        self._manifest = make_floor_manager_manifest()
+        self._conversation_id = f"conv:{uuid.uuid4()}"
+        self._policy = FloorController(policy)
+        self._history = ConversationHistory()
+        self._renderer = renderer
+        self._queue: asyncio.Queue = asyncio.Queue()
+        self._agents: dict[str, str] = {}  # speakerUri -> conversationalName
+        self._running = False
+        self._stop_event = asyncio.Event()
+
+    @property
+    def speaker_uri(self) -> str:
+        return FLOOR_MANAGER_URI_STR
+
+    @property
+    def queue(self) -> asyncio.Queue:
+        return self._queue
+
+    @property
+    def conversation_id(self) -> str:
+        return self._conversation_id
+
+    @property
+    def history(self) -> ConversationHistory:
+        return self._history
+
+    @property
+    def active_agents(self) -> dict[str, str]:
+        return dict(self._agents)
+
+    @property
+    def floor_holder(self) -> Optional[str]:
+        return self._policy.current_holder
+
+    def register_agent(self, speaker_uri: str, name: str) -> None:
+        """Register a local agent with the floor manager."""
+        self._agents[speaker_uri] = name
+        self._policy.add_to_rotation(speaker_uri)
+        if self._renderer:
+            self._renderer.add_agent(speaker_uri, name)
+
+    def unregister_agent(self, speaker_uri: str) -> None:
+        self._agents.pop(speaker_uri, None)
+        self._policy.remove_from_rotation(speaker_uri)
+
+    def _make_sender(self) -> Sender:
+        return Sender(
+            speakerUri=self.speaker_uri,
+            serviceUrl="local://floor-manager",
+        )
+
+    def _make_conversation(self) -> Conversation:
+        return Conversation(id=self._conversation_id)
+
+    async def _send(self, envelope: Envelope) -> None:
+        await self._bus.send(envelope)
+
+    async def _grant_floor(self, speaker_uri: str) -> None:
+        """Send grantFloor event to the specified agent."""
+        from openfloor import To
+        envelope = Envelope(
+            sender=self._make_sender(),
+            conversation=self._make_conversation(),
+            events=[
+                GrantFloorEvent(
+                    to=To(speakerUri=speaker_uri),
+                    reason="Your turn to speak",
+                )
+            ],
+        )
+        await self._send(envelope)
+        if self._renderer:
+            agent_name = self._agents.get(speaker_uri, speaker_uri)
+            self._renderer.show_system_event(f"Floor granted to {agent_name}")
+
+    async def _revoke_floor(self, speaker_uri: str, reason: str = "@timedOut") -> None:
+        """Revoke floor from the specified agent."""
+        from openfloor import To
+        envelope = Envelope(
+            sender=self._make_sender(),
+            conversation=self._make_conversation(),
+            events=[
+                RevokeFloorEvent(
+                    to=To(speakerUri=speaker_uri),
+                    reason=reason,
+                )
+            ],
+        )
+        await self._send(envelope)
+        self._policy.revoke_floor()
+
+    async def _handle_utterance(self, envelope: Envelope, event: UtteranceEvent) -> None:
+        """Process an utterance: add to history, broadcast."""
+        sender_uri = envelope.sender.speakerUri if envelope.sender else "unknown"
+        sender_name = self._agents.get(sender_uri, sender_uri.split(":")[-1])
+
+        # Extract text (dialogEvent is a direct attribute on UtteranceEvent)
+        text = ""
+        de = getattr(event, "dialogEvent", None)
+        if de and de.features:
+            text_feat = de.features.get("text")
+            if text_feat and text_feat.tokens:
+                text = " ".join(t.value for t in text_feat.tokens if t.value)
+
+        # Add to history
+        entry = HistoryEntry(
+            speaker_uri=sender_uri,
+            speaker_name=sender_name,
+            text=text,
+        )
+        self._history.add(entry)
+
+        # Display (bus already delivered the envelope to all other agents)
+        if self._renderer:
+            self._renderer.show_utterance(sender_uri, sender_name, text)
+
+    async def _handle_request_floor(self, envelope: Envelope, event: RequestFloorEvent) -> None:
+        sender_uri = envelope.sender.speakerUri if envelope.sender else "unknown"
+        reason = getattr(event, "reason", "") or ""
+        granted = self._policy.request_floor(sender_uri, reason)
+
+        if granted:
+            await self._grant_floor(sender_uri)
+        else:
+            agent_name = self._agents.get(sender_uri, sender_uri)
+            if self._renderer:
+                self._renderer.show_system_event(f"{agent_name} is waiting for the floor")
+
+    async def _handle_yield_floor(self, envelope: Envelope) -> None:
+        sender_uri = envelope.sender.speakerUri if envelope.sender else "unknown"
+        next_holder = self._policy.yield_floor(sender_uri)
+        if next_holder:
+            await self._grant_floor(next_holder)
+
+    async def process_envelope(self, envelope: Envelope) -> None:
+        """Process an incoming envelope from the bus."""
+        sender_uri = envelope.sender.speakerUri if envelope.sender else "unknown"
+
+        for event in (envelope.events or []):
+            event_type = event.eventType if hasattr(event, "eventType") else str(type(event).__name__)
+
+            if event_type == "utterance":
+                await self._handle_utterance(envelope, event)
+            elif event_type == "requestFloor":
+                await self._handle_request_floor(envelope, event)
+            elif event_type == "yieldFloor":
+                await self._handle_yield_floor(envelope)
+            elif event_type == "bye":
+                self.unregister_agent(sender_uri)
+                await self._bus.unregister(sender_uri)
+                if self._renderer:
+                    agent_name = self._agents.get(sender_uri, sender_uri)
+                    self._renderer.show_system_event(f"{agent_name} left the conversation")
+            else:
+                logger.debug("Floor manager ignoring event type: %s", event_type)
+
+    async def run(self) -> None:
+        """Main floor manager loop."""
+        self._running = True
+        await self._bus.register(self.speaker_uri, self._queue)
+
+        if self._renderer:
+            self._renderer.show_system_event(
+                f"Conversation started (ID: {self._conversation_id[:8]}...)"
+            )
+
+        try:
+            while self._running:
+                try:
+                    envelope = await asyncio.wait_for(self._queue.get(), timeout=1.0)
+                    await self.process_envelope(envelope)
+                except asyncio.TimeoutError:
+                    if self._stop_event.is_set():
+                        break
+                except Exception as e:
+                    logger.error("Floor manager error: %s", e, exc_info=True)
+        finally:
+            self._running = False
+
+    def stop(self) -> None:
+        self._running = False
+        self._stop_event.set()
