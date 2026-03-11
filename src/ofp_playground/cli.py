@@ -129,6 +129,7 @@ async def _run_session(
     no_human: bool = False,
     topic: Optional[str] = None,
     max_turns: Optional[int] = None,
+    human_name: str = "User",
 ) -> None:
     """Run the main conversation session."""
     renderer = TerminalRenderer(console)
@@ -144,7 +145,7 @@ async def _run_session(
     if not no_human:
         renderer.show_system_event("Type /help for commands, /quit to exit")
         human = HumanAgent(
-            name="User",
+            name=human_name,
             bus=bus,
             conversation_id=floor.conversation_id,
             renderer=renderer,
@@ -400,9 +401,14 @@ def main(ctx: click.Context, verbose: bool):
     type=int,
     help="Stop automatically after N utterances",
 )
+@click.option(
+    "--human-name",
+    default="User",
+    help="Display name for the human participant (default: User)",
+)
 @click.pass_context
 def start(ctx: click.Context, policy: str, agents: tuple, remotes: tuple,
-          no_human: bool, topic: Optional[str], max_turns: Optional[int]):
+          no_human: bool, topic: Optional[str], max_turns: Optional[int], human_name: str):
     """Start an interactive OFP conversation session.
 
     Agent spec formats (both supported):\n
@@ -417,9 +423,16 @@ def start(ctx: click.Context, policy: str, agents: tuple, remotes: tuple,
         asyncio.run(_run_session(
             floor_policy, agents, remotes, settings, verbose,
             no_human=no_human, topic=topic, max_turns=max_turns,
+            human_name=human_name,
         ))
     except KeyboardInterrupt:
         console.print("\n[dim]Session interrupted.[/dim]")
+    finally:
+        # Background threads (HTTP calls to LLM APIs) may still be running.
+        # os._exit skips atexit/thread-join to avoid the Python 3.13
+        # "Exception ignored on threading shutdown" traceback on Ctrl+C.
+        import os
+        os._exit(0)
 
 
 @main.command()

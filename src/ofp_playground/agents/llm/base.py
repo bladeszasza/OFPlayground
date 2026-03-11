@@ -141,6 +141,10 @@ class BaseLLMAgent(BasePlaygroundAgent):
                 short = err_str.split("\n")[0][:120]
                 logger.warning("[%s] quota/rate-limit (attempt %d): %s",
                                self._name, self._consecutive_errors, short)
+            elif "400" in err_str or "Bad request" in err_str or "model_not_supported" in err_str or "not supported" in err_str.lower():
+                short = err_str.split("\n")[0][:120]
+                logger.error("[%s] model error (giving up): %s", self._name, short)
+                self._consecutive_errors = 99  # permanently retire this agent
             else:
                 logger.error("[%s] LLM error: %s", self._name, e, exc_info=True)
         finally:
