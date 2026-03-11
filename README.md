@@ -250,6 +250,18 @@ ofp-playground start \
   --agent "-provider hf -type Text-to-Image -name Turbo -system vibrant anime-style illustration, dynamic skateboarding action, motion blur, bold saturated colors, manga speed lines -model Tongyi-MAI/Z-Image-Turbo"
 ```
 
+## Example: Human + LLM + Image + Video Artists
+
+```bash
+ofp-playground start \
+  --human-name Csabi \
+  --policy sequential \
+  --agent "hf:Rodney:You are Rodney Mullen, the godfather of street skateboarding. A quiet genius who sees skating as philosophy.:openai/gpt-oss-20b" \
+  --agent "-provider hf -type Text-to-Image -name Flux -system photorealistic skateboarding photography, dramatic lighting, urban concrete, cinematic composition, golden hour -model black-forest-labs/FLUX.1-dev" \
+  --agent "-provider hf -type Text-to-Video -name Wan -system cinematic skateboarding action, slow motion, dramatic tracking shot, dynamic angles -model Wan-AI/Wan2.2-TI2V-5B" \
+  --agent "-provider hf -type Text-to-Video -name Hunyuan -system high fidelity skateboarding footage, photorealistic motion, urban environment -model tencent/HunyuanVideo-1.5"
+```
+
 ---
 
 ## Example: 8-Agent Skateboarding Debate
