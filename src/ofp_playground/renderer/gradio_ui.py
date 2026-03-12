@@ -10,7 +10,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Gradio message format: {"role": "user"|"assistant", "content": str | list}
-# For images: content = [{"type": "image", "url": path}, {"type": "text", "text": caption}]
+# For images: content = [filepath_str, caption_str]  — Gradio detects image by extension
 
 
 def _envelope_to_chat_message(
@@ -56,13 +56,13 @@ def _envelope_to_chat_message(
         # Build content
         if media_key == "image" and media_path and Path(media_path).exists():
             content = [
-                {"type": "image", "url": media_path},
-                {"type": "text", "text": f"**{sender_name}**: {text}"},
+                media_path,
+                f"**{sender_name}**: {text}",
             ]
         elif media_key == "video" and media_path and Path(media_path).exists():
             content = [
-                {"type": "video", "url": media_path},
-                {"type": "text", "text": f"**{sender_name}**: {text}"},
+                media_path,
+                f"**{sender_name}**: {text}",
             ]
         else:
             content = f"**{sender_name}**: {text}"
@@ -221,10 +221,13 @@ def launch_web_session(
         timer = gr.Timer(2.0)
         timer.tick(poll_history, inputs=[chatbot], outputs=[chatbot])
 
+    images_dir = Path("ofp-images").resolve()
+    images_dir.mkdir(exist_ok=True)
     demo.launch(
         server_name=host,
         server_port=port,
         share=share,
         prevent_thread_lock=True,
+        allowed_paths=[str(images_dir)],
     )
     logger.info("Gradio UI launched at http://%s:%d", host, port)
