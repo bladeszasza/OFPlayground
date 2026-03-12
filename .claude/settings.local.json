@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import ofp_playground; print\\(''package ok''\\)\")",
+      "Bash(python3 -c \"import openfloor; print\\(dir\\(openfloor\\)\\)\")",
+      "Bash(python3 -c \":*)",
+      "Bash(python3 -c \"from openfloor import BotAgent, Capability, Conversation, DialogEvent, Envelope, GrantFloorEvent, Identification, InviteEvent, Manifest, PublishManifestsEvent, RequestFloorEvent, RevokeFloorEvent, Sender, SupportedLayers, TextFeature, UninviteEvent, UtteranceEvent; print\\(''all imports ok''\\)\")",
+      "Bash(source .env)",
+      "Bash(ofp-playground start:*)",
+      "Bash(pip install:*)",
+      "Bash(pip show:*)",
+      "Bash(git init:*)",
+      "Bash(git remote:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git pull:*)",
+      "Bash(git push:*)",
+      "Bash(source .venv/bin/activate)",
+      "Bash(python -c \"from huggingface_hub import InferenceClient; help\\(InferenceClient.text_to_video\\)\")",
+      "Bash(.venv/bin/python -c \"from huggingface_hub import InferenceClient; help\\(InferenceClient.text_to_video\\)\")",
+      "Bash(/Users/bolyos/Development/ofpPlaygorund/.venv/bin/python -c \"from huggingface_hub import InferenceClient; help\\(InferenceClient.text_to_video\\)\")",
+      "Bash(python3 -c \"from huggingface_hub import InferenceClient; import inspect; print\\(inspect.signature\\(InferenceClient.text_to_video\\)\\)\")"
+    ]
+  }
+}

@@ -57,5 +57,5 @@ MANIFEST
 
 # Project output
 
-.ofp-videos/
-.ofp-images/
+ofp-videos/
+ofp-images/

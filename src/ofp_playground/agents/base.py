@@ -89,6 +89,38 @@ class BasePlaygroundAgent:
         )
         await self.send_envelope(envelope)
 
+    def _make_media_utterance_envelope(
+        self,
+        text: str,
+        media_key: str,
+        mime_type: str,
+        file_path: str,
+    ) -> Envelope:
+        """Build an utterance envelope with both a text feature and a media feature.
+
+        The text feature carries a verbalizable description (required by OFP).
+        The media feature carries the file path via Token.value.
+        """
+        dialog_event = DialogEvent(
+            id=str(uuid.uuid4()),
+            speakerUri=self._speaker_uri,
+            features={
+                "text": TextFeature(
+                    mimeType="text/plain",
+                    tokens=[Token(value=text)],
+                ),
+                media_key: TextFeature(
+                    mimeType=mime_type,
+                    tokens=[Token(value=file_path)],
+                ),
+            },
+        )
+        return Envelope(
+            sender=self._make_sender(),
+            conversation=self._make_conversation(),
+            events=[UtteranceEvent(dialogEvent=dialog_event)],
+        )
+
     def _make_utterance_envelope(self, text: str) -> Envelope:
         dialog_event = DialogEvent(
             id=str(uuid.uuid4()),

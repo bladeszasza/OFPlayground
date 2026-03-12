@@ -72,7 +72,14 @@ class TerminalRenderer:
     def _timestamp(self) -> str:
         return datetime.now().strftime("%H:%M:%S")
 
-    def show_utterance(self, speaker_uri: str, speaker_name: str, text: str) -> None:
+    def show_utterance(
+        self,
+        speaker_uri: str,
+        speaker_name: str,
+        text: str,
+        media_key: str | None = None,
+        media_path: str | None = None,
+    ) -> None:
         color = self._get_color(speaker_uri)
         ts = self._timestamp()
         line = Text()
@@ -81,6 +88,12 @@ class TerminalRenderer:
         line.append(f"{speaker_name}", style=f"bold {color}")
         line.append(": ", style=color)
         line.append(text)
+        if media_key == "image" and media_path:
+            line.append(f"  🖼  {media_path}", style="dim cyan")
+        elif media_key == "video" and media_path:
+            line.append(f"  🎬  {media_path}", style="dim magenta")
+        elif media_key and media_path:
+            line.append(f"  [{media_key}] {media_path}", style="dim")
         self._console.print(line)
 
     def show_system_event(self, message: str) -> None:

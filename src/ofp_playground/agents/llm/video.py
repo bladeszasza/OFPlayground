@@ -91,8 +91,12 @@ class VideoAgent(BasePlaygroundAgent):
                 logger.info("[%s] Generating video: %s", self._name, prompt[:80])
                 path = await self._generate_video(prompt)
                 if path:
-                    msg = f"[{self._name}] Generated: {path.resolve()}\nPrompt: {prompt[:120]}"
-                    await self.send_envelope(self._make_utterance_envelope(msg))
+                    text_desc = f"Generated video for: {prompt[:200]}"
+                    await self.send_envelope(
+                        self._make_media_utterance_envelope(
+                            text_desc, "video", "video/mp4", str(path.resolve())
+                        )
+                    )
         except Exception as e:
             logger.error("[%s] Floor grant error: %s", self._name, e)
         finally:

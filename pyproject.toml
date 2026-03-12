@@ -24,6 +24,7 @@ dependencies = [
     "tomli-w>=1.0",
     "pydantic>=2.0",
     "huggingface_hub>=0.23",
+    "gradio>=4.0",
 ]
 
 [project.optional-dependencies]

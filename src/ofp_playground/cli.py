@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -167,7 +168,12 @@ async def _run_session(
         async def handle_history(args: str):
             n = int(args.strip()) if args.strip().isdigit() else 10
             for e in floor.history.recent(n):
-                renderer.show_utterance(e.speaker_uri, e.speaker_name, e.text)
+                media = e.primary_media
+                renderer.show_utterance(
+                    e.speaker_uri, e.speaker_name, e.text,
+                    media_key=media.feature_key if media else None,
+                    media_path=media.value_url if media else None,
+                )
 
         async def handle_floor(_args: str):
             holder = floor.floor_holder
@@ -473,6 +479,127 @@ def start(ctx: click.Context, policy: str, agents: tuple, remotes: tuple,
         # "Exception ignored on threading shutdown" traceback on Ctrl+C.
         import os
         os._exit(0)
+
+
+@main.command()
+@click.option("--policy", "-p", default="sequential",
+              help="Floor policy: sequential, round_robin, moderated, free_for_all")
+@click.option("--agent", "-a", "agents", multiple=True, metavar="TYPE:NAME[:DESCRIPTION]",
+              help="Pre-spawn an agent (e.g. anthropic:Claude:You are helpful)")
+@click.option("--topic", "-t", default=None,
+              help="Seed topic to start the conversation automatically")
+@click.option("--human-name", default="User",
+              help="Display name for the human participant (default: User)")
+@click.option("--host", default="0.0.0.0", help="Host to bind (default: 0.0.0.0)")
+@click.option("--port", default=7860, type=int, help="Port to listen on (default: 7860)")
+@click.option("--share", is_flag=True, default=False,
+              help="Create a public Gradio share link")
+@click.pass_context
+def web(ctx: click.Context, policy: str, agents: tuple, topic: Optional[str],
+        human_name: str, host: str, port: int, share: bool):
+    """Start the OFP Playground Gradio web UI.
+
+    Opens a browser-based chat interface where you can talk to AI agents.
+    """
+    verbose = ctx.obj.get("verbose", False)
+    if verbose:
+        logging.basicConfig(level=logging.DEBUG)
+    _load_dotenv()
+    settings = Settings.load()
+    floor_policy = _parse_policy(policy)
+
+    try:
+        asyncio.run(_run_web_session(
+            floor_policy, agents, settings, verbose,
+            topic=topic, human_name=human_name,
+            host=host, port=port, share=share,
+        ))
+    except KeyboardInterrupt:
+        console.print("\n[dim]Web session interrupted.[/dim]")
+    finally:
+        import os
+        os._exit(0)
+
+
+async def _run_web_session(
+    policy: FloorPolicy,
+    agent_specs: tuple[str, ...],
+    settings: Settings,
+    verbose: bool,
+    topic: Optional[str] = None,
+    human_name: str = "User",
+    host: str = "0.0.0.0",
+    port: int = 7860,
+    share: bool = False,
+) -> None:
+    """Run the web UI session (Gradio + OFP bus in the same process)."""
+    from ofp_playground.agents.web_human import WebHumanAgent
+    from ofp_playground.renderer.gradio_ui import launch_web_session
+    from ofp_playground.agents.registry import AgentRegistry
+
+    bus = MessageBus()
+    floor = FloorManager(bus, policy=policy, renderer=None)
+
+    human = WebHumanAgent(
+        name=human_name,
+        bus=bus,
+        conversation_id=floor.conversation_id,
+    )
+    floor.register_agent(human.speaker_uri, human.name)
+
+    registry = AgentRegistry()
+    registry.register(human)
+
+    tasks = [floor.run(), human.run()]
+
+    # Spawn pre-configured LLM agents
+    # Use a minimal renderer just for system messages in the terminal
+    term_renderer = TerminalRenderer(console, show_floor_events=False)
+    agent_display_names: list[str] = [human_name]
+    for spec in agent_specs:
+        try:
+            agent_type, name, description, model_ov = _parse_agent_spec(spec)
+            await _spawn_llm_agent(
+                agent_type, name, description, floor, bus, registry,
+                term_renderer, settings, model_ov,
+            )
+            agent_display_names.append(name)
+        except Exception as e:
+            console.print(f"[red]Failed to spawn agent: {e}[/red]")
+
+    if topic:
+        async def _seed():
+            await asyncio.sleep(1.5)
+            term_renderer.show_system_event(f'Topic: "{topic}"')
+            await _seed_topic(topic, floor, bus)
+        tasks.append(_seed())
+
+    # Get the running loop and launch Gradio from this coroutine's thread
+    loop = asyncio.get_event_loop()
+
+    def _launch():
+        launch_web_session(
+            floor=floor,
+            bus=bus,
+            human_agent=human,
+            agent_specs_display=agent_display_names,
+            policy_name=policy.value,
+            loop=loop,
+            host=host,
+            port=port,
+            share=share,
+        )
+        console.print(f"[green]Web UI ready → http://{host}:{port}[/green]")
+
+    # Launch Gradio in a thread so it doesn't block the event loop
+    threading.Thread(target=_launch, daemon=True).start()
+
+    try:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        pass
+    finally:
+        floor.stop()
 
 
 @main.command()

@@ -27,8 +27,9 @@ from openfloor import (
 )
 
 from ofp_playground.bus.message_bus import MessageBus, FLOOR_MANAGER_URI
-from ofp_playground.floor.history import ConversationHistory, HistoryEntry
+from ofp_playground.floor.history import ConversationHistory
 from ofp_playground.floor.policy import FloorController, FloorPolicy
+from ofp_playground.models.artifact import Utterance
 from ofp_playground.renderer.terminal import TerminalRenderer
 
 logger = logging.getLogger(__name__)
@@ -162,29 +163,44 @@ class FloorManager:
         self._policy.revoke_floor()
 
     async def _handle_utterance(self, envelope: Envelope, event: UtteranceEvent) -> None:
-        """Process an utterance: add to history, broadcast."""
+        """Process an utterance: build typed Utterance, add to history, render."""
         sender_uri = envelope.sender.speakerUri if envelope.sender else "unknown"
         sender_name = self._agents.get(sender_uri, sender_uri.split(":")[-1])
 
-        # Extract text (dialogEvent is a direct attribute on UtteranceEvent)
+        # Extract text and optional media features from the dialogEvent
         text = ""
+        media_key: str | None = None
+        media_path: str | None = None
+
         de = getattr(event, "dialogEvent", None)
         if de and de.features:
             text_feat = de.features.get("text")
             if text_feat and text_feat.tokens:
                 text = " ".join(t.value for t in text_feat.tokens if t.value)
 
-        # Add to history
-        entry = HistoryEntry(
-            speaker_uri=sender_uri,
-            speaker_name=sender_name,
-            text=text,
-        )
-        self._history.add(entry)
+            for key in ("image", "video", "audio", "3d"):
+                feat = de.features.get(key)
+                if feat and feat.tokens and feat.tokens[0].value:
+                    media_key = key
+                    media_path = feat.tokens[0].value
+                    break
+
+        # Build typed Utterance and store in history
+        if media_key == "image" and media_path:
+            utterance = Utterance.from_image(sender_uri, sender_name, text, media_path)
+        elif media_key == "video" and media_path:
+            utterance = Utterance.from_video(sender_uri, sender_name, text, media_path)
+        else:
+            utterance = Utterance.from_text(sender_uri, sender_name, text)
+
+        self._history.add(utterance)
 
         # Display (bus already delivered the envelope to all other agents)
         if self._renderer:
-            self._renderer.show_utterance(sender_uri, sender_name, text)
+            self._renderer.show_utterance(
+                sender_uri, sender_name, text,
+                media_key=media_key, media_path=media_path,
+            )
 
     async def _handle_request_floor(self, envelope: Envelope, event: RequestFloorEvent) -> None:
         sender_uri = envelope.sender.speakerUri if envelope.sender else "unknown"
