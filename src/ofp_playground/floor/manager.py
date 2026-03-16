@@ -22,6 +22,7 @@ from openfloor import (
     Sender,
     SupportedLayers,
     TextFeature,
+    Token,
     UninviteEvent,
     UtteranceEvent,
 )
@@ -80,6 +81,8 @@ class FloorManager:
         self._agents: dict[str, str] = {}  # speakerUri -> conversationalName
         self._running = False
         self._stop_event = asyncio.Event()
+        self._round_count = 0
+        self._agents_spoken_this_round: set[str] = set()
 
     @property
     def speaker_uri(self) -> str:
@@ -195,11 +198,66 @@ class FloorManager:
 
         self._history.add(utterance)
 
+        # Track round completion for sequential director notes
+        if sender_uri != self.speaker_uri:
+            self._agents_spoken_this_round.add(sender_uri)
+            text_agents = {
+                uri for uri in self._agents
+                if "image" not in uri and "video" not in uri and "audio" not in uri
+            }
+            if text_agents and text_agents.issubset(self._agents_spoken_this_round):
+                self._round_count += 1
+                self._agents_spoken_this_round.clear()
+                await self._inject_round_summary()
+
         # Display (bus already delivered the envelope to all other agents)
         if self._renderer:
             self._renderer.show_utterance(
                 sender_uri, sender_name, text,
                 media_key=media_key, media_path=media_path,
+            )
+
+    async def _inject_round_summary(self) -> None:
+        """Inject a director note between rounds to keep agents aligned."""
+        recent = self._history.recent(len(self._agents) + 2)
+
+        recap_parts = []
+        for entry in recent:
+            if entry.speaker_uri == self.speaker_uri:
+                continue
+            if "image" in entry.speaker_uri or "video" in entry.speaker_uri:
+                continue
+            snippet = entry.text[:80].replace("\n", " ").strip()
+            if snippet:
+                recap_parts.append(f"  {entry.speaker_name}: {snippet}...")
+
+        if not recap_parts:
+            return
+
+        director_text = (
+            f"[DIRECTOR — Round {self._round_count} complete]\n"
+            f"What just happened:\n" + "\n".join(recap_parts) + "\n\n"
+            f"IMPORTANT FOR ALL AGENTS: Build on what was said above. "
+            f"Do NOT contradict or ignore other agents' contributions. "
+            f"Do NOT invent new characters or plot threads that conflict with what was just established. "
+            f"React to and extend the existing narrative."
+        )
+
+        de = DialogEvent(
+            speakerUri=self.speaker_uri,
+            id=str(uuid.uuid4()),
+            features={"text": TextFeature(tokens=[Token(value=director_text)])},
+        )
+        envelope = Envelope(
+            sender=self._make_sender(),
+            conversation=self._make_conversation(),
+            events=[UtteranceEvent(dialogEvent=de)],
+        )
+        await self._send(envelope)
+
+        if self._renderer:
+            self._renderer.show_system_event(
+                f"[Director] Round {self._round_count} summary injected"
             )
 
     async def _handle_request_floor(self, envelope: Envelope, event: RequestFloorEvent) -> None:

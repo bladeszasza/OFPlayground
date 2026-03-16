@@ -367,6 +367,101 @@ async def _spawn_llm_agent(
                 api_key=api_key,
                 model=model_override or DEFAULT_VIDEO_MODEL,
             )
+        elif task == "image-text-to-text":
+            from ofp_playground.agents.llm.multimodal import MultimodalAgent
+            from ofp_playground.agents.llm.multimodal import DEFAULT_MODEL as DEFAULT_MULTIMODAL_MODEL
+            # Support "model@provider" syntax, e.g. "Qwen/Qwen3.5-9B@together"
+            raw_model = model_override or DEFAULT_MULTIMODAL_MODEL
+            if "@" in raw_model:
+                mm_model, mm_provider = raw_model.rsplit("@", 1)
+            else:
+                mm_model, mm_provider = raw_model, None
+            agent = MultimodalAgent(
+                name=name,
+                synopsis=description,
+                bus=bus,
+                conversation_id=floor.conversation_id,
+                api_key=api_key,
+                model=mm_model,
+                provider=mm_provider,
+            )
+        elif task == "image-classification":
+            from ofp_playground.agents.llm.classifier import ImageClassificationAgent
+            from ofp_playground.agents.llm.classifier import DEFAULT_MODEL as DEFAULT_CLASSIFIER_MODEL
+            agent = ImageClassificationAgent(
+                name=name,
+                synopsis=description,
+                bus=bus,
+                conversation_id=floor.conversation_id,
+                api_key=api_key,
+                model=model_override or DEFAULT_CLASSIFIER_MODEL,
+            )
+        elif task == "object-detection":
+            from ofp_playground.agents.llm.detector import ObjectDetectionAgent
+            from ofp_playground.agents.llm.detector import DEFAULT_MODEL as DEFAULT_DETECTOR_MODEL
+            agent = ObjectDetectionAgent(
+                name=name,
+                synopsis=description,
+                bus=bus,
+                conversation_id=floor.conversation_id,
+                api_key=api_key,
+                model=model_override or DEFAULT_DETECTOR_MODEL,
+            )
+        elif task == "image-segmentation":
+            from ofp_playground.agents.llm.segmenter import ImageSegmentationAgent
+            from ofp_playground.agents.llm.segmenter import DEFAULT_MODEL as DEFAULT_SEGMENTER_MODEL
+            agent = ImageSegmentationAgent(
+                name=name,
+                synopsis=description,
+                bus=bus,
+                conversation_id=floor.conversation_id,
+                api_key=api_key,
+                model=model_override or DEFAULT_SEGMENTER_MODEL,
+            )
+        elif task == "image-to-text":
+            from ofp_playground.agents.llm.ocr import OCRAgent
+            from ofp_playground.agents.llm.ocr import DEFAULT_MODEL as DEFAULT_OCR_MODEL
+            agent = OCRAgent(
+                name=name,
+                synopsis=description,
+                bus=bus,
+                conversation_id=floor.conversation_id,
+                api_key=api_key,
+                model=model_override or DEFAULT_OCR_MODEL,
+            )
+        elif task == "text-classification":
+            from ofp_playground.agents.llm.text_classifier import TextClassificationAgent
+            from ofp_playground.agents.llm.text_classifier import DEFAULT_MODEL as DEFAULT_TEXTCLS_MODEL
+            agent = TextClassificationAgent(
+                name=name,
+                synopsis=description,
+                bus=bus,
+                conversation_id=floor.conversation_id,
+                api_key=api_key,
+                model=model_override or DEFAULT_TEXTCLS_MODEL,
+            )
+        elif task == "token-classification":
+            from ofp_playground.agents.llm.ner import NERAgent
+            from ofp_playground.agents.llm.ner import DEFAULT_MODEL as DEFAULT_NER_MODEL
+            agent = NERAgent(
+                name=name,
+                synopsis=description,
+                bus=bus,
+                conversation_id=floor.conversation_id,
+                api_key=api_key,
+                model=model_override or DEFAULT_NER_MODEL,
+            )
+        elif task == "summarization":
+            from ofp_playground.agents.llm.summarizer import SummarizationAgent
+            from ofp_playground.agents.llm.summarizer import DEFAULT_MODEL as DEFAULT_SUMMARIZER_MODEL
+            agent = SummarizationAgent(
+                name=name,
+                synopsis=description,
+                bus=bus,
+                conversation_id=floor.conversation_id,
+                api_key=api_key,
+                model=model_override or DEFAULT_SUMMARIZER_MODEL,
+            )
         else:
             # Default: text-generation (and any other text-in/text-out tasks)
             from ofp_playground.agents.llm.huggingface import HuggingFaceAgent
@@ -383,7 +478,9 @@ async def _spawn_llm_agent(
     else:
         renderer.show_system_event(
             f"Unknown agent type: {agent_type}. Use: anthropic, openai, google, hf"
-            f" (with -type for HF tasks, e.g. -type Text-to-Image)"
+            f" (with -type for HF tasks, e.g. -type Text-to-Image,"
+            f" -type Image-Classification, -type Summarization, etc."
+            f" Run 'ofp-playground agents' for the full list)"
         )
         return
 
@@ -636,8 +733,22 @@ def agents():
         "  [cyan]google[/cyan] / gemini     — Google Gemini (requires GOOGLE_API_KEY)\n"
         "  [cyan]hf[/cyan] / huggingface    — HuggingFace Inference API (requires HF_API_KEY)\n"
         "                             -type defaults to Text-Generation\n"
-        "                             use -type <task> for other HF tasks\n"
-        "                             e.g. -type Text-to-Image, -type Text-to-Video\n"
+        "\n"
+        "  [bold]HF generative tasks (-type):[/bold]\n"
+        "    Text-Generation          — chat/text LLM (default)\n"
+        "    Text-to-Image            — generate images from conversation (default: FLUX.1-dev)\n"
+        "    Text-to-Video            — generate video clips (default: Wan2.2-TI2V-5B)\n"
+        "    Image-Text-to-Text       — vision-language model (default: Qwen2.5-VL-7B)\n"
+        "\n"
+        "  [bold]HF perception tasks (-type):[/bold]\n"
+        "    Image-Classification     — label images with predicted classes (default: vit-base-patch16-224)\n"
+        "    Object-Detection         — detect & count objects in images (default: detr-resnet-50)\n"
+        "    Image-Segmentation       — segment image into labeled regions (default: segformer_b2_clothes)\n"
+        "    Image-to-Text            — OCR / read text from images (default: GLM-OCR)\n"
+        "    Text-Classification      — classify conversation sentiment (default: roberta-base-sentiment)\n"
+        "    Token-Classification     — extract named entities (default: bert-multilingual-ner)\n"
+        "    Summarization            — periodically summarize the conversation (default: bart-large-cnn)\n"
+        "\n"
         "  [cyan]human[/cyan]               — Human participant (stdin/stdout)\n"
         "  [cyan]remote[/cyan]              — Remote OFP agent via HTTP"
     )

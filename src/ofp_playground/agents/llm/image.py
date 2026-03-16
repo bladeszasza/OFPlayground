@@ -48,13 +48,33 @@ class ImageAgent(BasePlaygroundAgent):
         OUTPUT_DIR.mkdir(exist_ok=True)
 
     def _build_prompt(self, text: str) -> str:
-        """Combine conversation text with the artist's style into an image prompt."""
-        # Strip speaker prefixes like "[Tony]:" from the text
+        """Build a clean image prompt from story text."""
+        # Strip speaker prefixes like "[Tony]:"
         clean = re.sub(r"^\[.*?\]:\s*", "", text).strip()
-        # Keep it focused — truncate very long inputs
-        if len(clean) > 300:
-            clean = clean[:300].rsplit(" ", 1)[0]
-        return f"{self._style}, {clean}"
+        # Strip markdown: bold, headers, horizontal rules, bracketed meta-text
+        clean = re.sub(r"\*\*([^*]+)\*\*", r"\1", clean)
+        clean = re.sub(r"#{1,6}\s*", "", clean)
+        clean = re.sub(r"---+", "", clean)
+        clean = re.sub(r"\[(?:DIRECTOR|floor-manager)[^\]]*\][^\n]*", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\[.*?\]", "", clean)
+        clean = clean.strip()
+        # Extract first two substantial sentences
+        sentences = re.split(r"[.!?]+", clean)
+        visual: list[str] = []
+        for s in sentences:
+            s = s.strip()
+            if len(s) > 15:
+                visual.append(s)
+            if len(visual) >= 2:
+                break
+        scene = ". ".join(visual).strip()
+        if not scene:
+            scene = clean
+        # Truncate to ~40 words — FLUX works best with concise prompts
+        words = scene.split()
+        if len(words) > 40:
+            scene = " ".join(words[:40])
+        return f"{self._style}, {scene}"
 
     async def _generate_image(self, prompt: str) -> Optional[Path]:
         loop = asyncio.get_event_loop()
@@ -77,6 +97,8 @@ class ImageAgent(BasePlaygroundAgent):
     async def _handle_utterance(self, envelope: Envelope) -> None:
         sender_uri = self._get_sender_uri(envelope)
         if sender_uri == self.speaker_uri:
+            return
+        if sender_uri and "floor-manager" in sender_uri:
             return
         text = self._extract_text_from_envelope(envelope)
         if not text:

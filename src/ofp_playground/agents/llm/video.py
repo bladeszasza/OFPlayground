@@ -76,6 +76,8 @@ class VideoAgent(BasePlaygroundAgent):
         sender_uri = self._get_sender_uri(envelope)
         if sender_uri == self.speaker_uri:
             return
+        if sender_uri and "floor-manager" in sender_uri:
+            return
         text = self._extract_text_from_envelope(envelope)
         if not text:
             return

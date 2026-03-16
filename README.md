@@ -1,6 +1,6 @@
 # OFPlaygorund
 
-A CLI tool for running multi-party AI conversations using the [Open Floor Protocol (OFP)](https://github.com/open-voice-interoperability/openfloor-python). Spawn local LLM agents and remote OFP agents, pick a floor policy, and watch them talk.
+A CLI tool for running multi-party AI conversations using the [Open Floor Protocol (OFP)](https://github.com/open-voice-interoperability/openfloor-python). Spawn local LLM agents and remote OFP agents, pick a floor policy, and watch them talk — in the terminal or via a Gradio web UI.
 
 **GitHub:** https://github.com/bladeszasza/OFPlaygorund
 
@@ -17,6 +17,7 @@ A CLI tool for running multi-party AI conversations using the [Open Floor Protoc
 - **Remote OFP agents** — connect any live OFP-compatible HTTP endpoint with `--remote`
 - **Autonomous mode** — run agent-only debates with `--no-human --topic`
 - **Dynamic agent management** — `/spawn` and `/kick` agents mid-conversation
+- **Gradio web UI** — browser-based chat interface via `ofp-playground web`
 - **Rich terminal UI** — per-agent colors, timestamps, floor status
 
 ---
@@ -51,7 +52,7 @@ Load before running:
 export $(grep -v '^#' .env | xargs)
 ```
 
-Keys are also read from `~/.ofp-playground/config.toml` under `[api_keys]`.
+Anthropic, OpenAI, and Google keys are also read from `~/.ofp-playground/config.toml` under `[api_keys]`. The HuggingFace key (`HF_API_KEY` or `HF_TOKEN`) is read from environment variables only.
 
 ---
 
@@ -72,6 +73,16 @@ ofp-playground start --no-human \
   --agent "hf:Optimist:You believe remote work is superior." \
   --agent "hf:Skeptic:You believe office work fosters better collaboration."
 ```
+
+### Gradio web UI
+
+```bash
+ofp-playground web \
+  --agent "hf:Alice:You are a curious explorer." \
+  --agent "anthropic:Claude:You are a helpful assistant."
+```
+
+Open `http://localhost:7860` in your browser. Use `--no-human` for a watch-only autonomous session.
 
 ---
 
@@ -210,7 +221,26 @@ Options:
   --no-human                 Run without human input (autonomous mode)
   -t, --topic TEXT           Seed topic to start the conversation
   -n, --max-turns INT        Stop automatically after N utterances
+  --human-name TEXT          Display name for the human participant (default: User)
   --show-floor-events        Show floor grant/request events (hidden by default)
+  -v, --verbose              Enable debug logging
+```
+
+### `ofp-playground web`
+
+Launch a Gradio browser-based chat UI. The OFP bus runs in the same process; the web UI polls for new messages every 2 seconds.
+
+```
+Options:
+  -p, --policy TEXT          Floor policy (default: sequential)
+  -a, --agent TYPE:NAME...   Pre-spawn an agent (repeatable)
+  -t, --topic TEXT           Seed topic for autonomous sessions
+  --no-human                 Watch-only mode — agents talk autonomously
+  -n, --max-turns INT        Stop automatically after N utterances
+  --human-name TEXT          Display name for the human participant (default: User)
+  --host TEXT                Host to bind (default: 0.0.0.0)
+  --port INT                 Port to listen on (default: 7860)
+  --share                    Create a public Gradio share link
   -v, --verbose              Enable debug logging
 ```
 
@@ -226,7 +256,7 @@ Validate an OFP envelope JSON file.
 
 ## In-Conversation Commands
 
-When running with a human agent, these slash commands are available:
+When running with a human agent (`start` command), these slash commands are available:
 
 | Command | Description |
 |---|---|
@@ -288,7 +318,7 @@ ofp-playground start --no-human \
 
 ```
 src/ofp_playground/
-├── cli.py                  # Click CLI entry point
+├── cli.py                  # Click CLI entry point (start, web, agents, validate)
 ├── config/settings.py      # Settings + API key resolution
 ├── bus/message_bus.py      # Async in-process message bus
 ├── floor/
@@ -297,7 +327,9 @@ src/ofp_playground/
 │   └── history.py          # Bounded conversation history
 ├── agents/
 │   ├── base.py             # BasePlaygroundAgent (OFP envelope handling)
+│   ├── registry.py         # Agent registry (lookup by name/URI)
 │   ├── human.py            # Human stdin/stdout agent
+│   ├── web_human.py        # Human agent for Gradio web UI (queue-based)
 │   ├── remote.py           # Remote OFP agent via HTTP
 │   └── llm/
 │       ├── base.py         # BaseLLMAgent (context, relevance filter)
@@ -307,7 +339,10 @@ src/ofp_playground/
 │       ├── huggingface.py  # HuggingFace text-generation
 │       ├── image.py        # HuggingFace text-to-image
 │       └── video.py        # HuggingFace text-to-video
-└── renderer/terminal.py    # Rich terminal output
+├── models/artifact.py      # Typed artifact definitions
+└── renderer/
+    ├── terminal.py         # Rich terminal output
+    └── gradio_ui.py        # Gradio web UI renderer
 ```
 
 ---
