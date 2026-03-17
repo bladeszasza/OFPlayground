@@ -86,6 +86,7 @@ class FloorManager:
         self._director_uri: Optional[str] = None
         self._showrunner_uri: Optional[str] = None
         self._orchestrator_uri: Optional[str] = None
+        self._assigned_uri: Optional[str] = None  # currently assigned agent in showrunner_driven mode
         self._spawn_callback: Optional[callable] = None  # set externally after creation
 
     @property
@@ -243,6 +244,7 @@ class FloorManager:
                 # SHOWRUNNER_DRIVEN: every worker utterance returns floor to orchestrator
                 is_media = any(k in sender_uri for k in ("image", "video", "audio"))
                 if not is_media:
+                    self._assigned_uri = None  # clear assignment — orchestrator decides next
                     await self.grant_to(self._orchestrator_uri)
                     if self._renderer:
                         self._renderer.show_system_event(
@@ -320,13 +322,17 @@ class FloorManager:
             if not line:
                 continue
 
-            # [ASSIGN AgentName]: task  — grant floor first, then broadcast directive
+            # [ASSIGN AgentName]: task  — set assigned agent, clear stale queue, grant floor
             m = re.match(r"\[ASSIGN\s+(.+?)\]\s*:\s*(.+)", line, re.IGNORECASE)
             if m:
                 target_name = m.group(1).strip()
                 task = m.group(2).strip()
                 target_uri = self._resolve_agent_uri_by_name(target_name)
                 if target_uri:
+                    # Track who is assigned so _handle_request_floor can filter others
+                    self._assigned_uri = target_uri
+                    # Flush any stale queue entries from agents that saw the orchestrator utterance
+                    self._policy._request_queue.clear()
                     # Grant before broadcasting so the agent's _has_floor=True suppresses self-request
                     await self.grant_to(target_uri)
                     await self._send_directed_utterance(
@@ -353,6 +359,8 @@ class FloorManager:
                 reason = m.group(2).strip()
                 target_uri = self._resolve_agent_uri_by_name(target_name)
                 if target_uri:
+                    self._assigned_uri = target_uri
+                    self._policy._request_queue.clear()
                     await self.grant_to(target_uri)
                     await self._send_directed_utterance(
                         f"[DIRECTIVE for {target_name}]: Revision requested — {reason}"
@@ -452,6 +460,13 @@ class FloorManager:
 
     async def _handle_request_floor(self, envelope: Envelope, event: RequestFloorEvent) -> None:
         sender_uri = envelope.sender.speakerUri if envelope.sender else "unknown"
+
+        # In showrunner_driven mode only the assigned agent may request floor —
+        # all other requests are silently dropped to prevent queue pile-up.
+        if self._orchestrator_uri:
+            if sender_uri not in (self._orchestrator_uri, self._assigned_uri):
+                return
+
         reason = getattr(event, "reason", "") or ""
         granted = self._policy.request_floor(sender_uri, reason)
 
