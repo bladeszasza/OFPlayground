@@ -27,6 +27,7 @@ class HuggingFaceAgent(BaseLLMAgent):
         api_key: str,
         model: str = DEFAULT_MODEL,
         relevance_filter: bool = True,
+        max_tokens: int = 500,
     ):
         super().__init__(
             name=name,
@@ -37,6 +38,7 @@ class HuggingFaceAgent(BaseLLMAgent):
             relevance_filter=relevance_filter,
             api_key=api_key,
         )
+        self._max_tokens = max_tokens
 
     def _get_client(self):
         from huggingface_hub import InferenceClient
@@ -80,7 +82,7 @@ class HuggingFaceAgent(BaseLLMAgent):
             client = self._get_client()
             response = client.chat.completions.create(
                 model=self._model,
-                max_tokens=500,
+                max_tokens=self._max_tokens,
                 messages=messages,
             )
             return self._clean(response.choices[0].message.content or "") or None

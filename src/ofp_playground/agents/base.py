@@ -68,6 +68,11 @@ class BasePlaygroundAgent:
     async def send_envelope(self, envelope: Envelope) -> None:
         await self._bus.send(envelope)
 
+    async def send_private_utterance(self, text: str, target_uri: str) -> None:
+        """Send a private utterance visible only to target_uri and the floor manager."""
+        envelope = self._make_utterance_envelope(text)
+        await self._bus.send_private(envelope, target_uri)
+
     async def request_floor(self, reason: str = "") -> None:
         if self._pending_floor_request:
             return

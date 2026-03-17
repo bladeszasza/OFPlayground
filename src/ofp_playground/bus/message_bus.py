@@ -71,6 +71,23 @@ class MessageBus:
                     except asyncio.QueueFull:
                         logger.warning("Queue full for agent %s, dropping envelope", uri)
 
+    async def send_private(self, envelope: Envelope, target_uri: str) -> None:
+        """Deliver envelope only to target_uri and the floor manager (OFP private message).
+
+        Use this for directed utterances that should not be seen by other agents.
+        """
+        async with self._lock:
+            recipients = {target_uri, FLOOR_MANAGER_URI}
+            sender_uri = envelope.sender.speakerUri if envelope.sender else None
+            if sender_uri:
+                recipients.discard(sender_uri)
+            for uri in recipients:
+                if uri in self._queues:
+                    try:
+                        self._queues[uri].put_nowait(envelope)
+                    except asyncio.QueueFull:
+                        logger.warning("Queue full for agent %s, dropping private envelope", uri)
+
     @property
     def registered_agents(self) -> list[str]:
         return list(self._queues.keys())

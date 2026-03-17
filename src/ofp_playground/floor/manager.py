@@ -88,6 +88,9 @@ class FloorManager:
         self._orchestrator_uri: Optional[str] = None
         self._assigned_uri: Optional[str] = None  # currently assigned agent in showrunner_driven mode
         self._spawn_callback: Optional[callable] = None  # set externally after creation
+        self._manuscript: list[str] = []  # accumulated accepted chunks (showrunner_driven)
+        self._last_worker_text: str = ""  # most recent non-orchestrator utterance text
+        self._last_worker_name: str = ""  # speaker name for the above
 
     @property
     def speaker_uri(self) -> str:
@@ -244,6 +247,9 @@ class FloorManager:
                 # SHOWRUNNER_DRIVEN: every worker utterance returns floor to orchestrator
                 is_media = any(k in sender_uri for k in ("image", "video", "audio"))
                 if not is_media:
+                    # Record last worker output for manuscript accumulation on [ACCEPT]
+                    self._last_worker_text = text
+                    self._last_worker_name = sender_name
                     self._assigned_uri = None  # clear assignment — orchestrator decides next
                     await self.grant_to(self._orchestrator_uri)
                     if self._renderer:
@@ -290,8 +296,8 @@ class FloorManager:
                 return uri
         return None
 
-    async def _send_directed_utterance(self, text: str) -> None:
-        """Broadcast a floor-manager utterance (used for ASSIGN/REJECT directives)."""
+    async def _send_directed_utterance(self, text: str, target_uri: Optional[str] = None) -> None:
+        """Send a directive utterance, privately if target_uri given (OFP private message)."""
         de = DialogEvent(
             speakerUri=self.speaker_uri,
             id=str(uuid.uuid4()),
@@ -302,7 +308,10 @@ class FloorManager:
             conversation=self._make_conversation(),
             events=[UtteranceEvent(dialogEvent=de)],
         )
-        await self._send(envelope)
+        if target_uri:
+            await self._bus.send_private(envelope, target_uri)
+        else:
+            await self._send(envelope)
 
     async def _handle_orchestrator_directives(self, text: str) -> None:
         """Parse and execute structured directives emitted by the OrchestratorAgent.
@@ -333,11 +342,19 @@ class FloorManager:
                     self._assigned_uri = target_uri
                     # Flush any stale queue entries from agents that saw the orchestrator utterance
                     self._policy._request_queue.clear()
-                    # Grant before broadcasting so the agent's _has_floor=True suppresses self-request
+                    # Build directive, injecting manuscript context if any has been accepted
+                    directive = f"[DIRECTIVE for {target_name}]: {task}"
+                    if self._manuscript:
+                        manuscript_text = "\n\n".join(self._manuscript)
+                        directive += (
+                            f"\n\n--- STORY SO FAR ({sum(len(c.split()) for c in self._manuscript)} words) ---\n"
+                            f"{manuscript_text}\n"
+                            f"--- END OF STORY SO FAR ---\n"
+                            f"Continue directly from where the story left off."
+                        )
+                    # Grant before sending directive; use private routing (OFP private message)
                     await self.grant_to(target_uri)
-                    await self._send_directed_utterance(
-                        f"[DIRECTIVE for {target_name}]: {task}"
-                    )
+                    await self._send_directed_utterance(directive, target_uri=target_uri)
                     if self._renderer:
                         self._renderer.show_system_event(
                             f"[Orchestrator → {target_name}]: {task[:60]}"
@@ -346,10 +363,16 @@ class FloorManager:
                     logger.warning("Orchestrator [ASSIGN]: agent '%s' not found", target_name)
                 continue
 
-            # [ACCEPT]
+            # [ACCEPT]  — append last worker output to shared manuscript
             if re.match(r"\[ACCEPT\]", line, re.IGNORECASE):
+                if self._last_worker_text:
+                    self._manuscript.append(self._last_worker_text)
+                    self._last_worker_text = ""
                 if self._renderer:
-                    self._renderer.show_system_event("[Orchestrator] Output accepted")
+                    word_count = sum(len(chunk.split()) for chunk in self._manuscript)
+                    self._renderer.show_system_event(
+                        f"[Orchestrator] Accepted — manuscript: {word_count} words"
+                    )
                 continue
 
             # [REJECT AgentName]: reason
@@ -363,7 +386,8 @@ class FloorManager:
                     self._policy._request_queue.clear()
                     await self.grant_to(target_uri)
                     await self._send_directed_utterance(
-                        f"[DIRECTIVE for {target_name}]: Revision requested — {reason}"
+                        f"[DIRECTIVE for {target_name}]: Revision requested — {reason}",
+                        target_uri=target_uri,
                     )
                     if self._renderer:
                         self._renderer.show_system_event(
