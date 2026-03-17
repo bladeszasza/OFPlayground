@@ -153,5 +153,13 @@ class TerminalRenderer:
             style="green",
         ))
 
+    def show_manuscript(self, text: str, filepath: Optional[str] = None) -> None:
+        """Display the final assembled manuscript in a panel."""
+        word_count = len(text.split())
+        title = f"[bold green]Final Manuscript[/bold green] [dim]({word_count} words)[/dim]"
+        if filepath:
+            title += f"  [dim cyan]saved → {filepath}[/dim cyan]"
+        self._console.print(Panel(text, title=title, border_style="green", padding=(1, 2)))
+
     def print(self, *args, **kwargs) -> None:
         self._console.print(*args, **kwargs)

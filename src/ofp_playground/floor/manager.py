@@ -436,8 +436,36 @@ class FloorManager:
             if re.match(r"\[TASK_COMPLETE\]", line, re.IGNORECASE):
                 if self._renderer:
                     self._renderer.show_system_event("[Orchestrator] Task complete — stopping")
+                self._output_manuscript()
                 self.stop()
                 return
+
+    def _output_manuscript(self) -> None:
+        """Print the assembled manuscript and save it to a file."""
+        if not self._manuscript:
+            return
+        import os
+        from datetime import datetime
+
+        text = "\n\n".join(self._manuscript)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        conv_short = self._conversation_id.split(":")[-1][:8]
+        filename = f"manuscript_{ts}_{conv_short}.txt"
+        filepath = os.path.join(os.getcwd(), filename)
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(text)
+        except OSError as e:
+            logger.warning("Could not save manuscript: %s", e)
+            filepath = None
+
+        if self._renderer:
+            self._renderer.show_manuscript(text, filepath=filepath)
+        else:
+            print("\n\n=== FINAL MANUSCRIPT ===\n")
+            print(text)
+            if filepath:
+                print(f"\n[saved to {filepath}]")
 
     async def _inject_round_summary(self) -> None:
         """Inject a director note between rounds to keep agents aligned."""
