@@ -50,15 +50,19 @@ def _parse_policy(policy_str: str) -> FloorPolicy:
         raise click.BadParameter(f"Invalid policy. Choose from: {valid}")
 
 
-def _parse_agent_spec(spec: str) -> tuple[str, str, str, Optional[str], Optional[int]]:
+def _parse_agent_spec(spec: str) -> tuple[str, str, str, Optional[str], Optional[int], Optional[float], int]:
     """Parse agent spec in two supported formats:
 
     Colon format:  type:name[:description[:model]]
     Flag format:   -provider TYPE -name NAME [-system DESCRIPTION] [-model MODEL]
+                   [-max-tokens N] [-timeout SECONDS] [-max-retries N]
 
     Examples:
         hf:Astronomer:You are a skeptical astronomer.:meta-llama/Llama-3.2-1B-Instruct
         -provider hf -name Astronomer -system You are a skeptical astronomer. -model meta-llama/Llama-3.2-1B-Instruct
+        -provider hf -name FastTask -timeout 30 -max-retries 2
+
+    Returns: (agent_type, name, description, model_override, max_tokens_override, timeout, max_retries)
     """
     import re
 
@@ -66,7 +70,7 @@ def _parse_agent_spec(spec: str) -> tuple[str, str, str, Optional[str], Optional
 
     if spec.startswith("-"):
         # Flag-based format: find each -flag and collect its value up to the next -flag
-        flag_re = re.compile(r"-(provider|name|system|model|type|max-tokens)\s+", re.IGNORECASE)
+        flag_re = re.compile(r"-(provider|name|system|model|type|max-tokens|timeout|max-retries)\s+", re.IGNORECASE)
         matches = list(flag_re.finditer(spec))
         if not matches:
             raise click.BadParameter(f"Invalid flag-based agent spec: {spec}")
@@ -87,12 +91,16 @@ def _parse_agent_spec(spec: str) -> tuple[str, str, str, Optional[str], Optional
         model_override = flags.get("model") or None
         max_tokens_raw = flags.get("max-tokens")
         max_tokens_override = int(max_tokens_raw) if max_tokens_raw and max_tokens_raw.isdigit() else None
+        timeout_raw = flags.get("timeout")
+        timeout_override = float(timeout_raw) if timeout_raw else None
+        max_retries_raw = flags.get("max-retries")
+        max_retries_override = int(max_retries_raw) if max_retries_raw and max_retries_raw.isdigit() else 0
 
         if not provider:
             raise click.BadParameter(f"Missing -provider in agent spec: {spec}")
         if not name:
             raise click.BadParameter(f"Missing -name in agent spec: {spec}")
-        return agent_type, name, description, model_override, max_tokens_override
+        return agent_type, name, description, model_override, max_tokens_override, timeout_override, max_retries_override
 
     # Colon-separated format
     parts = spec.split(":", 3)
@@ -106,7 +114,7 @@ def _parse_agent_spec(spec: str) -> tuple[str, str, str, Optional[str], Optional
     name = parts[1]
     description = parts[2] if len(parts) > 2 else f"I am {name}, an AI assistant."
     model_override = parts[3] if len(parts) > 3 else None
-    return agent_type, name, description, model_override, None
+    return agent_type, name, description, model_override, None, None, 0
 
 
 async def _seed_topic(topic: str, floor: "FloorManager", bus: "MessageBus") -> None:
@@ -153,7 +161,7 @@ async def _run_session(
     # Spawn callback for OrchestratorAgent [SPAWN] directives (set after registry exists)
     async def _floor_spawn_callback(spec_str: str) -> None:
         try:
-            agent_type, name, description, model_ov, max_tokens_ov = _parse_agent_spec(spec_str)
+            agent_type, name, description, model_ov, max_tokens_ov, timeout_ov, max_retries_ov = _parse_agent_spec(spec_str)
             task_type = agent_type.split(":", 1)[1] if ":" in agent_type else "text-generation"
 
             # Manifest-based check (rich capability info)
@@ -177,7 +185,8 @@ async def _run_session(
                 return
 
             await _spawn_llm_agent(
-                agent_type, name, description, floor, bus, registry, renderer, settings, model_ov, max_tokens_ov
+                agent_type, name, description, floor, bus, registry, renderer, settings,
+                model_ov, max_tokens_ov, timeout_ov, max_retries_ov,
             )
         except Exception as e:
             logger.error("spawn_callback failed for spec '%s': %s", spec_str, e)
@@ -232,7 +241,7 @@ async def _run_session(
             name = parts[1]
             description = parts[2] if len(parts) > 2 else f"I am {name}, an AI assistant."
             model_ov = parts[3] if len(parts) > 3 else None
-            await _spawn_llm_agent(agent_type, name, description, floor, bus, registry, renderer, settings, model_ov, max_tokens_ov)
+            await _spawn_llm_agent(agent_type, name, description, floor, bus, registry, renderer, settings, model_ov)
 
         async def handle_kick(args: str):
             name = args.strip()
@@ -258,8 +267,8 @@ async def _run_session(
     # Spawn pre-configured agents
     for spec in agent_specs:
         try:
-            agent_type, name, description, model_ov, max_tokens_ov = _parse_agent_spec(spec)
-            await _spawn_llm_agent(agent_type, name, description, floor, bus, registry, renderer, settings, model_ov, max_tokens_ov)
+            agent_type, name, description, model_ov, max_tokens_ov, timeout_ov, max_retries_ov = _parse_agent_spec(spec)
+            await _spawn_llm_agent(agent_type, name, description, floor, bus, registry, renderer, settings, model_ov, max_tokens_ov, timeout_ov, max_retries_ov)
         except Exception as e:
             renderer.show_system_event(f"Failed to spawn agent: {e}")
 
@@ -337,6 +346,8 @@ async def _spawn_llm_agent(
     settings: Settings,
     model_override: Optional[str] = None,
     max_tokens_override: Optional[int] = None,
+    timeout_override: Optional[float] = None,
+    max_retries_override: int = 0,
 ) -> None:
     """Spawn and register an LLM agent."""
     agent = None
@@ -583,6 +594,11 @@ async def _spawn_llm_agent(
         return
 
     if agent:
+        # Apply timeout / retry settings from CLI flags
+        if timeout_override is not None:
+            agent._timeout = timeout_override
+        if max_retries_override:
+            agent._max_retries = max_retries_override
         # Give every LLM agent access to the live URI→name registry
         if hasattr(agent, "set_name_registry"):
             agent.set_name_registry(floor._agents)

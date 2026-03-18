@@ -126,7 +126,7 @@ class ShowRunnerAgent(HuggingFaceAgent):
                     self._stop_callback()
                 return
 
-            response = await self._generate_response([])
+            response = await self._call_with_retry(lambda: self._generate_response([]))
             if response:
                 self._append_to_context(self._name, response, is_self=True)
                 await self.send_envelope(self._make_utterance_envelope(response))
@@ -307,7 +307,7 @@ class OrchestratorAgent(HuggingFaceAgent):
         """Floor granted by FloorManager — issue next directive based on current context."""
         self._has_floor = True
         try:
-            response = await self._generate_response([])
+            response = await self._call_with_retry(lambda: self._generate_response([]))
             if response:
                 self._append_to_context(self._name, response, is_self=True)
                 await self.send_envelope(self._make_utterance_envelope(response))

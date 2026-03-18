@@ -51,6 +51,10 @@ class BasePlaygroundAgent:
         self._running = False
         self._conversation_history: list[dict] = []
         self._pending_floor_request: bool = False  # prevent duplicate floor requests
+        # Retry / timeout settings — overridden per-agent via CLI flags
+        self._timeout: Optional[float] = None  # seconds per API call; None = no timeout
+        self._max_retries: int = 0             # extra attempts after first failure
+        self._retry_delay: float = 2.0         # base back-off seconds (doubles each attempt)
 
     @property
     def speaker_uri(self) -> str:
@@ -199,6 +203,51 @@ class BasePlaygroundAgent:
             events=[event],
         )
         await self.send_envelope(envelope)
+
+    @staticmethod
+    def _is_retryable_error(err_str: str) -> bool:
+        """Return True for transient errors worth retrying (rate-limits, overload, 5xx)."""
+        low = err_str.lower()
+        return any(k in low for k in (
+            "429", "rate", "quota", "resource_exhausted",
+            "503", "502", "504", "overload", "timeout",
+        ))
+
+    async def _call_with_retry(self, coro_fn):
+        """Call coro_fn() (a zero-arg callable returning a coroutine) with timeout + retry.
+
+        Uses self._timeout (seconds, None = unlimited) and self._max_retries (0 = single attempt).
+        Retryable errors get exponential back-off: delay * 2**attempt, capped at 30 s.
+        Non-retryable exceptions are re-raised immediately.
+        When all attempts are exhausted the last exception is re-raised.
+        """
+        last_exc: BaseException = RuntimeError("no attempts made")
+        total_attempts = self._max_retries + 1
+        for attempt in range(total_attempts):
+            try:
+                if self._timeout is not None:
+                    return await asyncio.wait_for(coro_fn(), timeout=self._timeout)
+                return await coro_fn()
+            except asyncio.TimeoutError as exc:
+                last_exc = exc
+                logger.warning(
+                    "[%s] call timed out after %.1fs (attempt %d/%d)",
+                    self._name, self._timeout, attempt + 1, total_attempts,
+                )
+            except Exception as exc:
+                last_exc = exc
+                if not self._is_retryable_error(str(exc)):
+                    raise
+                logger.warning(
+                    "[%s] retryable error (attempt %d/%d): %s",
+                    self._name, attempt + 1, total_attempts,
+                    str(exc).split("\n")[0][:120],
+                )
+            if attempt + 1 < total_attempts:
+                delay = min(self._retry_delay * (2 ** attempt), 30.0)
+                logger.info("[%s] retrying in %.1fs...", self._name, delay)
+                await asyncio.sleep(delay)
+        raise last_exc
 
     async def run(self) -> None:
         """Main agent loop. Override in subclasses."""

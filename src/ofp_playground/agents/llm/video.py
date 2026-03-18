@@ -79,8 +79,11 @@ class VideoAgent(BasePlaygroundAgent):
             client = InferenceClient(token=self._api_key)
             return client.text_to_video(prompt, model=self._model)
 
+        async def _coro():
+            return await loop.run_in_executor(None, _call)
+
         try:
-            video_bytes = await loop.run_in_executor(None, _call)
+            video_bytes = await self._call_with_retry(_coro)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             path = OUTPUT_DIR / f"{ts}_{self._name.lower()}.mp4"
             path.write_bytes(video_bytes)

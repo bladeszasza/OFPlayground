@@ -234,12 +234,15 @@ class BaseLLMAgent(BasePlaygroundAgent):
             # Get participants from conversation history
             participants = []  # Could be populated from registry
 
-            response_text = await self._generate_response(participants)
+            response_text = await self._call_with_retry(lambda: self._generate_response(participants))
             if response_text:
                 self._append_to_context(self._name, response_text, is_self=True)
                 envelope = self._make_utterance_envelope(response_text)
                 await self.send_envelope(envelope)
                 self._consecutive_errors = 0
+        except asyncio.TimeoutError:
+            self._consecutive_errors += 1
+            logger.warning("[%s] response timed out (errors: %d)", self._name, self._consecutive_errors)
         except Exception as e:
             self._consecutive_errors += 1
             err_str = str(e)

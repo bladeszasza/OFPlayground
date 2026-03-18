@@ -15,6 +15,17 @@ ART_MODEL="Tongyi-MAI/Z-Image"
 
 MAX_TURNS=60
 
+# ── Timeout / retry settings ─────────────────────────────────────
+# Director (orchestrator) gets a generous timeout — its responses drive the session.
+DIRECTOR_TIMEOUT=180
+DIRECTOR_RETRIES=2
+# Text workers: 90 s per call, 2 retries on rate-limit / 5xx.
+WORKER_TIMEOUT=90
+WORKER_RETRIES=2
+# Image generation can be slow; give it more time.
+IMAGE_TIMEOUT=300
+IMAGE_RETRIES=1
+
 MISSION="Create a short romantic comedy novella, featuring 80's junkie skate culture. \
 The story should involve twists, and have distinct deep characters. Put emphasis on great jokes, and sophisticated humor. \
 Warm, silly skate cultre tone. \
@@ -41,36 +52,48 @@ ofp-playground start \
   \
   --agent "-provider orchestrator \
            -name Director \
+           -timeout $DIRECTOR_TIMEOUT \
+           -max-retries $DIRECTOR_RETRIES \
            -system $MISSION \
            -model $DIRECTOR_MODEL" \
   \
   --agent "-provider hf \
            -name StoryWriter \
            -max-tokens 1200 \
+           -timeout $WORKER_TIMEOUT \
+           -max-retries $WORKER_RETRIES \
            -model $WRITER_MODEL \
            -system You write like Seth Rogen or Seth MacFarlane. Write EXACTLY what the Director assigned you — nothing more. $NO_REASONING" \
   \
   --agent "-provider hf \
            -name DialogWriter \
            -max-tokens 800 \
+           -timeout $WORKER_TIMEOUT \
+           -max-retries $WORKER_RETRIES \
            -model $WRITER_MODEL \
            -system You write funny simple dialogue for sophisticate kinky adult humor. Write EXACTLY what the Director assigned you. $NO_REASONING" \
   \
   --agent "-provider hf \
            -name ComedyBeats \
            -max-tokens 800 \
+           -timeout $WORKER_TIMEOUT \
+           -max-retries $WORKER_RETRIES \
            -model $COMEDY_MODEL \
            -system You write one silly physical comedy moment. Your writing style resembles Jim Carrey. Write EXACTLY what the Director assigned you. Setup plus punchline. $NO_REASONING" \
   \
   --agent "-provider hf \
            -name CliffWriter \
            -max-tokens 800 \
+           -timeout $WORKER_TIMEOUT \
+           -max-retries $WORKER_RETRIES \
            -model $COMEDY_MODEL \
            -system You write the best cliffhangers and scene transitions, your style resembles George R R Martin. Write EXACTLY what the Director assigned you. End with oh-no or I-wonder. Oh Fuck! I didnt see it comming! Holly Macaronni! $NO_REASONING" \
   \
   --agent "-provider hf \
            -name Davinci \
            -max-tokens 8000 \
+           -timeout $IMAGE_TIMEOUT \
+           -max-retries $IMAGE_RETRIES \
            -type Text-to-Image \
            -model $ART_MODEL \
            -system Your art style resembles Stan Lee. Paint EXACTLY what the Director assigned you. Use texture shaded style with bold colors and dynamic lighting. $NO_REASONING"

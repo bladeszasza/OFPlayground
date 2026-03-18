@@ -8,8 +8,6 @@ version = "0.1.0"
 description = "CLI tool for Open Floor Protocol multi-agent conversations"
 authors = [{ name = "BladeSzaSza" }]
 readme = "README.md"
-homepage = "https://github.com/bladeszasza/OFPlaygorund"
-repository = "https://github.com/bladeszasza/OFPlaygorund"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
 dependencies = [
@@ -26,6 +24,10 @@ dependencies = [
     "huggingface_hub>=0.23",
     "gradio>=4.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/bladeszasza/OFPlaygorund"
+Repository = "https://github.com/bladeszasza/OFPlaygorund"
 
 [project.optional-dependencies]
 dev = [

@@ -102,8 +102,11 @@ class ImageAgent(BasePlaygroundAgent):
             client = InferenceClient(token=self._api_key)
             return client.text_to_image(prompt, model=self._model)
 
+        async def _coro():
+            return await loop.run_in_executor(None, _call)
+
         try:
-            image = await loop.run_in_executor(None, _call)
+            image = await self._call_with_retry(_coro)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             path = OUTPUT_DIR / f"{ts}_{self._name.lower()}.png"
             image.save(str(path))

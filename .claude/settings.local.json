@@ -23,7 +23,14 @@
       "Bash(python -c \":*)",
       "WebFetch(domain:openfloor.dev)",
       "Bash(chmod:*)",
-      "Bash(grep -E \"\\\\.py$\")"
+      "Bash(grep -E \"\\\\.py$\")",
+      "Skill(claude-api)",
+      "Bash(python3 -c \"from openfloor import PublishManifestsEvent, Manifest, Identification, Capability, SupportedLayers; import inspect; print\\(inspect.signature\\(PublishManifestsEvent\\)\\)\")",
+      "Read(//Users/bolyos/**)",
+      "Bash(python3:*)",
+      "Bash(.venv/bin/python -c \"\nfrom src.ofp_playground.agents.base import BasePlaygroundAgent\nfrom src.ofp_playground.agents.llm.base import BaseLLMAgent\nfrom src.ofp_playground.agents.llm.image import ImageAgent\nfrom src.ofp_playground.agents.llm.video import VideoAgent\nfrom src.ofp_playground.floor.manager import FloorManager\nprint\\('All imports OK'\\)\n\" 2>&1)",
+      "Bash(pip3 show:*)",
+      "Bash(python:*)"
     ]
   }
 }
