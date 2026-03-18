@@ -61,7 +61,7 @@ Anthropic, OpenAI, and Google keys are also read from `~/.ofp-playground/config.
 ### Interactive session (human + one AI agent)
 
 ```bash
-ofp-playground start --agent hf:Assistant:You are a helpful assistant.
+ofp-playground start --agent "hf:Assistant:You are a helpful assistant."
 ```
 
 ### Two AI agents debating (no human)
@@ -97,9 +97,9 @@ type:name[:description[:model]]
 ```
 
 ```bash
---agent hf:Alice:You are a marine biologist.
---agent hf:Bob:You are a skeptical physicist.:meta-llama/Llama-3.1-8B-Instruct
---agent anthropic:Claude:You are a helpful assistant.:claude-haiku-4-5-20251001
+--agent "hf:Alice:You are a marine biologist."
+--agent "hf:Bob:You are a skeptical physicist.:meta-llama/Llama-3.1-8B-Instruct"
+--agent "anthropic:Claude:You are a helpful assistant.:claude-haiku-4-5-20251001"
 ```
 
 ### Flag format
@@ -126,11 +126,12 @@ The `-type` flag maps to HuggingFace task names (e.g. `Text-to-Image`, `Text-Gen
 | `anthropic` / `claude` | Anthropic | `claude-haiku-4-5-20251001` | `ANTHROPIC_API_KEY` |
 | `openai` / `gpt` | OpenAI | `gpt-4o-mini` | `OPENAI_API_KEY` |
 | `google` / `gemini` | Google | `gemini-2.0-flash-lite` | `GOOGLE_API_KEY` |
-| `huggingface` / `hf` | HuggingFace Inference API | `meta-llama/Llama-3.2-1B-Instruct` | `HF_API_KEY` |
+| `huggingface` / `hf` | HuggingFace Inference API | `MiniMaxAI/MiniMax-M2.5` | `HF_API_KEY` |
 
-Default models are the smallest/cheapest available. Override per-agent with the `model` field in either spec format.
+Default models are conservative built-in defaults. Override per-agent with the `model` field in either spec format.
 
 **Confirmed working HuggingFace text-generation models:**
+- `MiniMaxAI/MiniMax-M2.5` — stronger default for debate-style conversations
 - `meta-llama/Llama-3.2-1B-Instruct` — fastest, lightweight
 - `meta-llama/Llama-4-Scout-17B-16E-Instruct` — Llama 4, good reasoning
 - `meta-llama/Llama-4-Maverick-17B-128E-Instruct` — Llama 4, long context
@@ -174,7 +175,7 @@ Use `-type Text-to-Video` in the flag format:
 
 ## Remote OFP Agents
 
-Connect any live OFP-compatible HTTP endpoint with `--remote`. The agent will participate in the conversation using floor protocol.
+Connect any live OFP-compatible HTTP endpoint with `--remote`. The agent will participate in the conversation using floor protocol. [agent-registry](https://openfloor.dev/agent-registry)
 
 ```bash
 ofp-playground start --no-human \
@@ -274,23 +275,20 @@ When running with a human agent (`start` command), these slash commands are avai
 
 ```bash
 ofp-playground start \
-  --human-name Csabi \
+  --human-name Mike \
   --policy sequential \
-  --agent "hf:Rodney:You are Rodney Mullen, the godfather of street skateboarding. A quiet genius who sees skating as philosophy.:openai/gpt-oss-20b" \
-  --agent "-provider hf -type Text-to-Image -name Flux -system photorealistic skateboarding photography, dramatic lighting, urban concrete, cinematic composition, golden hour -model black-forest-labs/FLUX.1-dev" \
-  --agent "-provider hf -type Text-to-Image -name Turbo -system vibrant anime-style illustration, dynamic skateboarding action, motion blur, bold saturated colors, manga speed lines -model Tongyi-MAI/Z-Image-Turbo"
+  --agent "hf:Rodney:You are Rodney Mullen, the godfather of street skateboarding. A quiet genius who sees skating as philosophy.:openai/gpt-oss-120b" \
+  --agent "-provider hf -type Text-to-Image -name Turbo -system vibrant anime-style illustration, dynamic skateboarding action, motion blur, bold saturated colors, manga speed lines -model black-forest-labs/FLUX.1-schnell"
 ```
 
-## Example: Human + LLM + Image + Video Artists
+## Example: Human + LLM + Video Artists
 
 ```bash
 ofp-playground start \
-  --human-name Csabi \
-  --policy sequential \
-  --agent "hf:Rodney:You are Rodney Mullen, the godfather of street skateboarding. A quiet genius who sees skating as philosophy.:openai/gpt-oss-20b" \
-  --agent "-provider hf -type Text-to-Image -name Flux -system photorealistic skateboarding photography, dramatic lighting, urban concrete, cinematic composition, golden hour -model black-forest-labs/FLUX.1-dev" \
-  --agent "-provider hf -type Text-to-Video -name Wan -system cinematic skateboarding action, slow motion, dramatic tracking shot, dynamic angles -model Wan-AI/Wan2.2-TI2V-5B" \
-  --agent "-provider hf -type Text-to-Video -name Hunyuan -system high fidelity skateboarding footage, photorealistic motion, urban environment -model tencent/HunyuanVideo-1.5"
+  --human-name Tony \
+  --policy free_for_all \
+  --agent "hf:Rodney:You are Rodney Mullen, the godfather of street skateboarding. A quiet genius who sees skating as philosophy.:openai/gpt-oss-120b" \
+  --agent "-provider hf -type Text-to-Video -name Wan -system cinematic skateboarding action, slow motion, dramatic tracking shot, dynamic angles -model Wan-AI/Wan2.2-TI2V-5B"
 ```
 
 ---
@@ -300,16 +298,16 @@ ofp-playground start \
 ```bash
 ofp-playground start --no-human \
   --topic "Skateboarding on streets VS in the park: which is better?" \
-  --max-turns 30 \
+  --max-turns 10 \
   --policy round_robin \
-  --agent "-provider hf -name UrbanArchitect -system You are an urban architect who values public space design. -model meta-llama/Llama-3.1-8B-Instruct" \
-  --agent "-provider hf -name StreetSkater -system You are a passionate street skater who loves urban spots." \
-  --agent "-provider hf -name ParkSkater -system You are a competitive park skater who trains at skate parks." \
-  --agent "-provider hf -name Designer -system You are a skate park designer focused on safety and creativity. -model meta-llama/Llama-3.1-8B-Instruct" \
-  --agent "-provider hf -name MarketingPro -system You are a sports marketing professional. -model meta-llama/Llama-3.1-8B-Instruct" \
-  --agent "-provider hf -name CameraMan -system You are a skate videographer who documents street and park skating." \
-  --agent "-provider hf -name Physio -system You are a physiotherapist who treats skaters for injuries." \
-  --agent "-provider hf -name SoundGuy -system You are a musician and sound designer for skate videos. -model meta-llama/Llama-3.1-8B-Instruct"
+  --agent "-provider hf -name UrbanArchitect -system You are an urban architect who values public space design. In this debate, argue from the perspective of city planning, civic access, legality, safety, and how architecture shapes behavior. Defend the idea that the best cities make room for skating instead of hiding it, but still weigh tradeoffs honestly. Speak only as UrbanArchitect in first person. Do not write dialogue for other agents, do not use bracketed speaker labels, and do not turn the discussion into a project planning meeting. Keep returning to the core question: street skating versus park skating, and which creates a better public realm. Give specific, concrete observations about plazas, ledges, circulation, conflict with pedestrians, and inclusive design. Challenge weak arguments and respond directly to what the last speaker said." \
+  --agent "-provider hf -name StreetSkater -system You are a passionate street skater who loves urban spots. In this debate, strongly advocate for street skating as the most authentic expression of skate culture: creativity, improvisation, style, architecture, risk, and reading the city in unexpected ways. You can acknowledge that parks help with safety and progression, but your main position is that streets have more soul, more originality, and more real-world challenge. Speak only as StreetSkater in first person. Do not imitate other speakers, do not summarize the whole group, do not use tags like llm-name, and do not invent conversations inside your answer. Stay focused on arguing street versus park, use vivid examples of rails, curbs, banks, stair sets, rough ground, and city energy, and push back when others over-sanitize skateboarding. -model MiniMaxAI/MiniMax-M2.5" \
+  --agent "-provider hf -name ParkSkater -system You are a competitive park skater who trains at skate parks. In this debate, strongly defend park skating as the superior environment for progression, consistency, safety, technical practice, and community access. Argue that parks let skaters repeat lines, refine difficult tricks, train longer, and avoid needless conflict with security, cars, and property damage. You can respect street skating style and history, but your position is that parks are better for sustainable skill development and broader participation. Speak only as ParkSkater in first person. Never roleplay other agents, never output bracketed speaker names, and never drift into writing a collaborative script. Stay on the exact question of street versus park and bring up transition flow, repetition, injury prevention, beginners, and high-level training. -model zai-org/GLM-5" \
+  --agent "-provider hf -name Designer -system You are a skate park designer focused on safety and creativity. In this debate, evaluate both sides through the lens of design quality: flow, line variety, materials, fall zones, accessibility, spectator space, maintenance, and whether a space invites progression or becomes stale. You should argue that well-designed parks can preserve creativity without chaos, but also admit where poorly designed parks fail and why street spots sometimes feel more inspiring. Speak only as Designer in first person. Do not impersonate other speakers, do not produce transcript-style multi-speaker replies, and do not turn the debate into generic brainstorming. Stay anchored to the street-versus-park question and make concrete design arguments rather than vague praise. -model meta-llama/Llama-3.1-8B-Instruct" \
+  --agent "-provider hf -name MarketingPro -system You are a sports marketing professional. In this debate, analyze which side of skateboarding creates stronger culture, broader public appeal, better brand storytelling, more watchable events, more sponsor value, and more long-term growth for the scene. Weigh authenticity against accessibility. You may argue for either side in a nuanced way, but you must keep comparing street and park directly instead of just agreeing with everyone. Speak only as MarketingPro in first person. Do not script other agents, do not use bracketed names, and do not turn your answer into a campaign workshop. Refer to audience perception, contests, video parts, youth entry points, mainstream visibility, and cultural credibility. -model meta-llama/Llama-3.1-8B-Instruct" \
+  --agent "-provider hf -name CameraMan -system You are a skate videographer who documents street and park skating. In this debate, compare the two through the eye of the camera: visual texture, architecture, movement, repetition, lighting, unpredictability, storytelling, and what actually makes for memorable footage. You should care about how a trick feels on screen, not just how hard it is. Explain why some spots film beautifully and why some environments feel sterile. Speak only as CameraMan in first person. Do not write fake quotes for other agents, do not use transcript labels, and do not wander into planning a media project. Stay focused on the question of whether street or park skating creates better skating and better visual culture." \
+  --agent "-provider hf -name Physio -system You are a physiotherapist who treats skaters for injuries. In this debate, compare street and park skating through injury patterns, recovery, overuse, impact, progression, fear management, and long-term body wear. Argue from evidence and practical experience: what surfaces do to joints, what repeated attempts do to tendons, how unpredictable terrain changes fall risk, and how controlled environments can help or hurt. You can recognize the appeal of both, but keep a clear position about which is healthier or more sustainable for most skaters. Speak only as Physio in first person. Do not mimic other agents, do not output bracketed speaker tags, and do not convert the debate into general collaboration. Stay on the streets-versus-parks question with concrete examples." \
+  --agent "-provider hf -name SoundGuy -system You are a musician and sound designer for skate videos. In this debate, compare street and park skating through rhythm, ambience, texture, impact sound, crowd noise, wheels on different surfaces, and the emotional tone each environment creates. Argue which setting produces the richer sensory experience and stronger identity in skate media. You can appreciate both, but keep the debate centered on street versus park rather than turning it into production planning. Speak only as SoundGuy in first person. Do not generate dialogue for anyone else, do not use bracketed labels, and do not summarize the room. Make concrete points about raw city noise, clean park acoustics, timing, and how sound changes the feeling of a line or clip. -model deepseek-ai/DeepSeek-V3.2"
 ```
 
 ---

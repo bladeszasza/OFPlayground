@@ -29,6 +29,7 @@ class ApiKeysConfig:
     anthropic: Optional[str] = None
     openai: Optional[str] = None
     google: Optional[str] = None
+    huggingface: Optional[str] = None
 
 
 @dataclass
@@ -36,7 +37,7 @@ class DefaultsConfig:
     llm_model_anthropic: str = "claude-haiku-4-5-20251001"          # smallest Claude
     llm_model_openai: str = "gpt-4o-mini"                           # smallest GPT
     llm_model_google: str = "gemini-2.0-flash-lite"                 # smallest Gemini
-    llm_model_huggingface: str = "meta-llama/Llama-3.2-1B-Instruct" # smallest confirmed on HF
+    llm_model_huggingface: str = "MiniMaxAI/MiniMax-M2.5"           # stronger default for HF debates
     relevance_filter: bool = True
 
 
@@ -56,7 +57,11 @@ class Settings:
         return self.api_keys.google or os.environ.get("GOOGLE_API_KEY")
 
     def get_huggingface_key(self) -> Optional[str]:
-        return os.environ.get("HF_API_KEY") or os.environ.get("HF_TOKEN")
+        return (
+            self.api_keys.huggingface
+            or os.environ.get("HF_API_KEY")
+            or os.environ.get("HF_TOKEN")
+        )
 
     @classmethod
     def load(cls) -> "Settings":
@@ -90,6 +95,7 @@ class Settings:
                 "anthropic": self.api_keys.anthropic,
                 "openai": self.api_keys.openai,
                 "google": self.api_keys.google,
+                "huggingface": self.api_keys.huggingface,
             }.items() if v is not None},
             "defaults": {
                 "llm_model_anthropic": self.defaults.llm_model_anthropic,

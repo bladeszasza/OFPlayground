@@ -62,6 +62,13 @@ class HumanAgent(BasePlaygroundAgent):
                     # Don't display our own messages again
                     if sender_uri != self.speaker_uri:
                         pass  # Renderer handles this via floor manager broadcast
+                if (
+                    sender_uri != self.speaker_uri
+                    and self._floor_policy == "sequential"
+                    and not self._has_floor
+                ):
+                    # In sequential mode, ask for the next turn after others speak.
+                    await self.request_floor("waiting for next turn")
 
             elif event_type == "grantFloor":
                 self._has_floor = True
@@ -153,8 +160,6 @@ class HumanAgent(BasePlaygroundAgent):
             if self._floor_policy == "sequential" and self._has_floor:
                 self._has_floor = False
                 await self.yield_floor()
-                # Re-request for next turn
-                await self.request_floor()
 
     async def _receive_loop(self) -> None:
         """Process incoming messages from the bus."""
