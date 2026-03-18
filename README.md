@@ -1,8 +1,8 @@
-# OFPlaygorund
+# OFPlayground
 
 A CLI tool for running multi-party AI conversations using the [Open Floor Protocol (OFP)](https://github.com/open-voice-interoperability/openfloor-python). Spawn local LLM agents and remote OFP agents, pick a floor policy, and watch them talk — in the terminal or via a Gradio web UI.
 
-**GitHub:** https://github.com/bladeszasza/OFPlaygorund
+**GitHub:** https://github.com/bladeszasza/OFPlayground
 
 ---
 
@@ -25,8 +25,8 @@ A CLI tool for running multi-party AI conversations using the [Open Floor Protoc
 ## Installation
 
 ```bash
-git clone https://github.com/bladeszasza/OFPlaygorund
-cd OFPlaygorund
+git clone https://github.com/bladeszasza/OFPlayground
+cd OFPlayground
 
 pip install -e .
 ```

@@ -3,11 +3,13 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ofplaygorund"
+name = "ofplayground"
 version = "0.1.0"
 description = "CLI tool for Open Floor Protocol multi-agent conversations"
 authors = [{ name = "BladeSzaSza" }]
 readme = "README.md"
+homepage = "https://github.com/bladeszasza/OFPlayground"
+repository = "https://github.com/bladeszasza/OFPlayground"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
 dependencies = [
