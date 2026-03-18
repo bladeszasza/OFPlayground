@@ -54,8 +54,8 @@ def _parse_agent_spec(spec: str) -> tuple[str, str, str, Optional[str]]:
     Flag format:   -provider TYPE -name NAME [-system DESCRIPTION] [-model MODEL]
 
     Examples:
-        hf:Astronomer:You are a skeptical astronomer.:meta-llama/Llama-3.2-1B-Instruct
-        -provider hf -name Astronomer -system You are a skeptical astronomer. -model meta-llama/Llama-3.2-1B-Instruct
+        hf:Astronomer:You are a skeptical astronomer.:MiniMaxAI/MiniMax-M2.5
+        -provider hf -name Astronomer -system You are a skeptical astronomer. -model MiniMaxAI/MiniMax-M2.5
     """
     import re
 

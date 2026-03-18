@@ -115,11 +115,12 @@ The `-type` flag maps to HuggingFace task names (e.g. `Text-to-Image`, `Text-Gen
 | `anthropic` / `claude` | Anthropic | `claude-haiku-4-5-20251001` | `ANTHROPIC_API_KEY` |
 | `openai` / `gpt` | OpenAI | `gpt-4o-mini` | `OPENAI_API_KEY` |
 | `google` / `gemini` | Google | `gemini-2.0-flash-lite` | `GOOGLE_API_KEY` |
-| `huggingface` / `hf` | HuggingFace Inference API | `meta-llama/Llama-3.2-1B-Instruct` | `HF_API_KEY` |
+| `huggingface` / `hf` | HuggingFace Inference API | `MiniMaxAI/MiniMax-M2.5` | `HF_API_KEY` |
 
-Default models are the smallest/cheapest available. Override per-agent with the `model` field in either spec format.
+Default models are conservative built-in defaults. Override per-agent with the `model` field in either spec format.
 
 **Confirmed working HuggingFace text-generation models:**
+- `MiniMaxAI/MiniMax-M2.5` — stronger default for debate-style conversations
 - `meta-llama/Llama-3.2-1B-Instruct` — fastest, lightweight
 - `meta-llama/Llama-4-Scout-17B-16E-Instruct` — Llama 4, good reasoning
 - `meta-llama/Llama-4-Maverick-17B-128E-Instruct` — Llama 4, long context

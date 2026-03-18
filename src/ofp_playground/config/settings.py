@@ -36,7 +36,7 @@ class DefaultsConfig:
     llm_model_anthropic: str = "claude-haiku-4-5-20251001"          # smallest Claude
     llm_model_openai: str = "gpt-4o-mini"                           # smallest GPT
     llm_model_google: str = "gemini-2.0-flash-lite"                 # smallest Gemini
-    llm_model_huggingface: str = "meta-llama/Llama-3.2-1B-Instruct" # smallest confirmed on HF
+    llm_model_huggingface: str = "MiniMaxAI/MiniMax-M2.5"           # stronger default for HF debates
     relevance_filter: bool = True
 
 

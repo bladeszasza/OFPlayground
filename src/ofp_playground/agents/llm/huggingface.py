@@ -10,7 +10,7 @@ from ofp_playground.bus.message_bus import MessageBus
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "meta-llama/Llama-3.2-1B-Instruct"
+DEFAULT_MODEL = "MiniMaxAI/MiniMax-M2.5"
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
