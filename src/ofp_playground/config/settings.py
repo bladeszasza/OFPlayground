@@ -40,7 +40,7 @@ class DefaultsConfig:
     vision_model_openai: str = "gpt-4o-mini"                        # OpenAI vision (image-to-text)
     llm_model_google: str = "gemini-3.1-flash-lite-preview"          # default Gemini text model
     image_model_google: str = "gemini-3.1-flash-image-preview"      # Gemini image generation (Nano Banana)
-    vision_model_google: str = "gemini-2.0-flash"                   # Gemini vision (image-to-text)
+    vision_model_google: str = "gemini-3-flash-preview"              # Gemini vision (image-to-text)
     llm_model_huggingface: str = "MiniMaxAI/MiniMax-M2.5"           # stronger default for HF debates
     relevance_filter: bool = True
 

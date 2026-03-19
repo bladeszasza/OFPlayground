@@ -938,7 +938,7 @@ def agents():
         "  [bold]Google generative tasks (-type):[/bold]\n"
         "    Text-Generation          — chat/text LLM (default: gemini-3.1-flash-lite-preview)\n"
         "    Text-to-Image            — generate images via Nano Banana (default: gemini-3.1-flash-image-preview)\n"
-        "    Image-to-Text            — analyze images via Gemini vision (default: gemini-2.0-flash)\n"
+        "    Image-to-Text            — analyze images via Gemini vision (default: gemini-3-flash-preview)\n"
         "\n"
         "  [bold]HF generative tasks (-type):[/bold]\n"
         "    Text-Generation          — chat/text LLM (default)\n"

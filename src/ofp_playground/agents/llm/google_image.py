@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 OUTPUT_DIR = Path("ofp-images")
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 FALLBACK_IMAGE_MODEL = "gemini-2.5-flash-image"
-DEFAULT_VISION_MODEL = "gemini-2.0-flash"
+DEFAULT_VISION_MODEL = "gemini-3-flash-preview"
 GEMINI_IMAGE_URI_TEMPLATE = "tag:ofp-playground.local,2025:gimage-{name}"
 GEMINI_VISION_URI_TEMPLATE = "tag:ofp-playground.local,2025:gvision-{name}"
 
