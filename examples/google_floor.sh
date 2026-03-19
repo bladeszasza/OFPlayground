@@ -24,7 +24,7 @@ ofp-playground start \
   --policy sequential \
   --max-turns 8 \
   --agent "google:text-generation:Gemini:You are a poetic narrator. Describe the scene vividly in 3-4 sentences." \
-  --agent "google:text-to-image:Painter:impressionistic watercolour, soft light, fine detail" \
+  --agent "google:text-to-image:Painter:impressionistic watercolour, soft light, fine detail:gemini-2.5-flash-image" \
   --agent "google:image-to-text:Scout:You are a visual analyst. Describe what you see in the image concisely." \
   --agent "google:text-to-music:Composer:ambient cinematic score, soft piano, gentle strings, meditative" \
   --topic "$TOPIC"
