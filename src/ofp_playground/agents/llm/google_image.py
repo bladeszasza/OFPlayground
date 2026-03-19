@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = Path("ofp-images")
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
+FALLBACK_IMAGE_MODEL = "gemini-2.5-flash-image"
 DEFAULT_VISION_MODEL = "gemini-2.0-flash"
 GEMINI_IMAGE_URI_TEMPLATE = "tag:ofp-playground.local,2025:gimage-{name}"
 GEMINI_VISION_URI_TEMPLATE = "tag:ofp-playground.local,2025:gvision-{name}"
@@ -99,14 +100,15 @@ class GeminiImageAgent(BasePlaygroundAgent):
             scene = " ".join(words[:40])
         return f"{self._style}, {scene}"
 
-    async def _generate_image(self, prompt: str) -> Optional[Path]:
+    async def _generate_image(self, prompt: str) -> Optional[tuple[Path, str]]:
+        """Generate image, falling back to FALLBACK_IMAGE_MODEL on 503. Returns (path, model_used)."""
         loop = asyncio.get_event_loop()
 
-        def _call() -> bytes:
+        def _call(model: str) -> bytes:
             from google.genai import types
             client = self._get_client()
             response = client.models.generate_content(
-                model=self._model,
+                model=model,
                 contents=[prompt],
                 config=types.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"]),
             )
@@ -115,18 +117,29 @@ class GeminiImageAgent(BasePlaygroundAgent):
                     return part.inline_data.data
             raise RuntimeError("Gemini image generation returned no image data")
 
-        async def _coro() -> bytes:
-            return await loop.run_in_executor(None, _call)
+        models_to_try = [self._model]
+        if self._model != FALLBACK_IMAGE_MODEL:
+            models_to_try.append(FALLBACK_IMAGE_MODEL)
 
-        try:
-            image_bytes = await self._call_with_retry(_coro)
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            path = OUTPUT_DIR / f"{ts}_{self._name.lower()}.png"
-            path.write_bytes(image_bytes)
-            return path
-        except Exception as e:
-            logger.error("[%s] Gemini image generation error: %s", self._name, e)
-            return None
+        last_error: Optional[Exception] = None
+        for model in models_to_try:
+            try:
+                image_bytes = await loop.run_in_executor(None, _call, model)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                path = OUTPUT_DIR / f"{ts}_{self._name.lower()}.png"
+                path.write_bytes(image_bytes)
+                return path, model
+            except Exception as e:
+                err_str = str(e)
+                if "503" in err_str or "UNAVAILABLE" in err_str:
+                    logger.warning("[%s] %s unavailable (503), trying fallback %s", self._name, model, FALLBACK_IMAGE_MODEL)
+                    last_error = e
+                    continue
+                logger.error("[%s] Gemini image generation error: %s", self._name, e)
+                return None
+
+        logger.error("[%s] Gemini image generation error (all models failed): %s", self._name, last_error)
+        return None
 
     async def _handle_utterance(self, envelope: Envelope) -> None:
         sender_uri = self._get_sender_uri(envelope)
@@ -157,9 +170,11 @@ class GeminiImageAgent(BasePlaygroundAgent):
             prompt = self._raw_prompt or (self._build_prompt(self._last_text) if self._last_text else None)
             if prompt:
                 logger.info("[%s] Generating Gemini image: %s", self._name, prompt[:80])
-                path = await self._generate_image(prompt)
-                if path:
-                    text_desc = f"Generated image for: {prompt[:200]}"
+                result = await self._generate_image(prompt)
+                if result:
+                    path, model_used = result
+                    fallback_note = f" (used {model_used} — primary model was busy)" if model_used != self._model else ""
+                    text_desc = f"Generated image for: {prompt[:200]}{fallback_note}"
                     await self.send_envelope(
                         self._make_media_utterance_envelope(
                             text_desc, "image", "image/png", str(path.resolve())
