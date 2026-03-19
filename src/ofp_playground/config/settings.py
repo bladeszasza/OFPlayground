@@ -35,6 +35,7 @@ class ApiKeysConfig:
 @dataclass
 class DefaultsConfig:
     llm_model_anthropic: str = "claude-haiku-4-5-20251001"          # smallest Claude
+    vision_model_anthropic: str = "claude-haiku-4-5-20251001"       # Claude vision (image-to-text)
     llm_model_openai: str = "gpt-5.4-nano"                          # smallest GPT-5.4
     image_model_openai: str = "gpt-4o"                               # model used with image_generation tool
     vision_model_openai: str = "gpt-4o-mini"                        # OpenAI vision (image-to-text)
@@ -104,6 +105,7 @@ class Settings:
             }.items() if v is not None},
             "defaults": {
                 "llm_model_anthropic": self.defaults.llm_model_anthropic,
+                "vision_model_anthropic": self.defaults.vision_model_anthropic,
                 "llm_model_openai": self.defaults.llm_model_openai,
                 "image_model_openai": self.defaults.image_model_openai,
                 "vision_model_openai": self.defaults.vision_model_openai,

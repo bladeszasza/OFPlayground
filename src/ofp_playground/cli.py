@@ -369,20 +369,39 @@ async def _spawn_llm_agent(
     """Spawn and register an LLM agent."""
     agent = None
 
-    if agent_type in ("anthropic", "claude"):
+    if agent_type in ("anthropic", "claude") or agent_type.startswith(("anthropic:", "claude:")):
         api_key = settings.get_anthropic_key()
         if not api_key:
             api_key = click.prompt(f"Enter Anthropic API key for {name}", hide_input=True)
-        from ofp_playground.agents.llm.anthropic import AnthropicAgent
-        agent = AnthropicAgent(
-            name=name,
-            synopsis=description,
-            bus=bus,
-            conversation_id=floor.conversation_id,
-            api_key=api_key,
-            model=model_override or settings.defaults.llm_model_anthropic,
-            relevance_filter=settings.defaults.relevance_filter,
-        )
+
+        task = agent_type.split(":", 1)[1] if ":" in agent_type else "text-generation"
+
+        if task == "text-generation":
+            from ofp_playground.agents.llm.anthropic import AnthropicAgent
+            agent = AnthropicAgent(
+                name=name,
+                synopsis=description,
+                bus=bus,
+                conversation_id=floor.conversation_id,
+                api_key=api_key,
+                model=model_override or settings.defaults.llm_model_anthropic,
+                relevance_filter=settings.defaults.relevance_filter,
+            )
+        elif task == "image-to-text":
+            from ofp_playground.agents.llm.anthropic_vision import AnthropicVisionAgent
+            agent = AnthropicVisionAgent(
+                name=name,
+                synopsis=description,
+                bus=bus,
+                conversation_id=floor.conversation_id,
+                api_key=api_key,
+                model=model_override or settings.defaults.vision_model_anthropic,
+            )
+        else:
+            renderer.show_system_event(
+                f"Unknown Anthropic task: {task}. Use anthropic for text-generation or image-to-text."
+            )
+            return
 
     elif agent_type in ("openai", "gpt") or agent_type.startswith(("openai:", "gpt:")):
         api_key = settings.get_openai_key()
@@ -934,11 +953,16 @@ def agents():
     console.print(
         "[bold]Available agent types:[/bold]\n"
         "  [cyan]anthropic[/cyan] / claude  — Anthropic Claude (requires ANTHROPIC_API_KEY)\n"
+        "                             -type defaults to Text-Generation\n"
         "  [cyan]openai[/cyan] / gpt        — OpenAI GPT (requires OPENAI_API_KEY)\n"
         "                             -type Text-to-Image uses OpenAI image models\n"
         "  [cyan]google[/cyan] / gemini     — Google Gemini (requires GOOGLE_API_KEY)\n"
         "  [cyan]hf[/cyan] / huggingface    — HuggingFace Inference API (requires HF_API_KEY)\n"
         "                             -type defaults to Text-Generation\n"
+        "\n"
+        "  [bold]Anthropic generative tasks (-type):[/bold]\n"
+        "    Text-Generation          — chat/text LLM (default: claude-haiku-4-5-20251001)\n"
+        "    Image-to-Text            — analyze images via Claude vision (default: claude-haiku-4-5-20251001)\n"
         "\n"
         "  [bold]OpenAI generative tasks (-type):[/bold]\n"
         "    Text-Generation          — chat/text LLM (default: gpt-5.4-nano)\n"

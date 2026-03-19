@@ -1,4 +1,5 @@
 from .anthropic import AnthropicAgent
+from .anthropic_vision import AnthropicVisionAgent
 from .openai import OpenAIAgent
 from .openai_image import OpenAIImageAgent, OpenAIVisionAgent
 from .google import GoogleAgent
@@ -16,6 +17,7 @@ from .summarizer import SummarizationAgent
 
 __all__ = [
     "AnthropicAgent",
+    "AnthropicVisionAgent",
     "OpenAIAgent",
     "OpenAIImageAgent",
     "OpenAIVisionAgent",
