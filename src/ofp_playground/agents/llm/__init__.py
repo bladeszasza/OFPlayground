@@ -2,6 +2,7 @@ from .anthropic import AnthropicAgent
 from .openai import OpenAIAgent
 from .openai_image import OpenAIImageAgent, OpenAIVisionAgent
 from .google import GoogleAgent
+from .google_image import GeminiImageAgent, GeminiVisionAgent
 from .huggingface import HuggingFaceAgent
 from .multimodal import MultimodalAgent
 from .classifier import ImageClassificationAgent
@@ -18,6 +19,8 @@ __all__ = [
     "OpenAIImageAgent",
     "OpenAIVisionAgent",
     "GoogleAgent",
+    "GeminiImageAgent",
+    "GeminiVisionAgent",
     "HuggingFaceAgent",
     "MultimodalAgent",
     "ImageClassificationAgent",

@@ -9,7 +9,7 @@ from ofp_playground.bus.message_bus import MessageBus
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gemini-2.0-flash"
+DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
 
 
 class GoogleAgent(BaseLLMAgent):

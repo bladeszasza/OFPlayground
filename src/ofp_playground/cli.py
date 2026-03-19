@@ -428,20 +428,49 @@ async def _spawn_llm_agent(
             )
             return
 
-    elif agent_type in ("google", "gemini"):
+    elif agent_type in ("google", "gemini") or agent_type.startswith(("google:", "gemini:")):
         api_key = settings.get_google_key()
         if not api_key:
             api_key = click.prompt(f"Enter Google API key for {name}", hide_input=True)
-        from ofp_playground.agents.llm.google import GoogleAgent
-        agent = GoogleAgent(
-            name=name,
-            synopsis=description,
-            bus=bus,
-            conversation_id=floor.conversation_id,
-            api_key=api_key,
-            model=model_override or settings.defaults.llm_model_google,
-            relevance_filter=settings.defaults.relevance_filter,
-        )
+
+        task = agent_type.split(":", 1)[1] if ":" in agent_type else "text-generation"
+
+        if task == "text-generation":
+            from ofp_playground.agents.llm.google import GoogleAgent
+            agent = GoogleAgent(
+                name=name,
+                synopsis=description,
+                bus=bus,
+                conversation_id=floor.conversation_id,
+                api_key=api_key,
+                model=model_override or settings.defaults.llm_model_google,
+                relevance_filter=settings.defaults.relevance_filter,
+            )
+        elif task == "text-to-image":
+            from ofp_playground.agents.llm.google_image import GeminiImageAgent
+            agent = GeminiImageAgent(
+                name=name,
+                style=description,
+                bus=bus,
+                conversation_id=floor.conversation_id,
+                api_key=api_key,
+                model=model_override or settings.defaults.image_model_google,
+            )
+        elif task == "image-to-text":
+            from ofp_playground.agents.llm.google_image import GeminiVisionAgent
+            agent = GeminiVisionAgent(
+                name=name,
+                synopsis=description,
+                bus=bus,
+                conversation_id=floor.conversation_id,
+                api_key=api_key,
+                model=model_override or settings.defaults.vision_model_google,
+            )
+        else:
+            renderer.show_system_event(
+                f"Unknown Google task: {task}. Use google for text-generation, text-to-image, or image-to-text."
+            )
+            return
 
     elif agent_type in ("huggingface", "hf") or agent_type.startswith(("huggingface:", "hf:")):
         api_key = settings.get_huggingface_key()
@@ -905,6 +934,11 @@ def agents():
         "    Text-Generation          — chat/text LLM (default: gpt-5.4-nano)\n"
         "    Text-to-Image            — generate images via Responses API (default: gpt-4o)\n"
         "    Image-to-Text            — analyze images via vision (default: gpt-4o-mini)\n"
+        "\n"
+        "  [bold]Google generative tasks (-type):[/bold]\n"
+        "    Text-Generation          — chat/text LLM (default: gemini-3.1-flash-lite-preview)\n"
+        "    Text-to-Image            — generate images via Nano Banana (default: gemini-3.1-flash-image-preview)\n"
+        "    Image-to-Text            — analyze images via Gemini vision (default: gemini-2.0-flash)\n"
         "\n"
         "  [bold]HF generative tasks (-type):[/bold]\n"
         "    Text-Generation          — chat/text LLM (default)\n"

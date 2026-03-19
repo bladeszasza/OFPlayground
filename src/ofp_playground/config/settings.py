@@ -38,7 +38,9 @@ class DefaultsConfig:
     llm_model_openai: str = "gpt-5.4-nano"                          # smallest GPT-5.4
     image_model_openai: str = "gpt-4o"                               # model used with image_generation tool
     vision_model_openai: str = "gpt-4o-mini"                        # OpenAI vision (image-to-text)
-    llm_model_google: str = "gemini-2.0-flash-lite"                 # smallest Gemini
+    llm_model_google: str = "gemini-3.1-flash-lite-preview"          # default Gemini text model
+    image_model_google: str = "gemini-3.1-flash-image-preview"      # Gemini image generation (Nano Banana)
+    vision_model_google: str = "gemini-2.0-flash"                   # Gemini vision (image-to-text)
     llm_model_huggingface: str = "MiniMaxAI/MiniMax-M2.5"           # stronger default for HF debates
     relevance_filter: bool = True
 
@@ -105,6 +107,8 @@ class Settings:
                 "image_model_openai": self.defaults.image_model_openai,
                 "vision_model_openai": self.defaults.vision_model_openai,
                 "llm_model_google": self.defaults.llm_model_google,
+                "image_model_google": self.defaults.image_model_google,
+                "vision_model_google": self.defaults.vision_model_google,
                 "relevance_filter": self.defaults.relevance_filter,
             },
         }
