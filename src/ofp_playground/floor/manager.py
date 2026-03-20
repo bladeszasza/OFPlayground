@@ -138,6 +138,35 @@ class FloorManager:
         self._policy.grant_to(speaker_uri)
         await self._grant_floor(speaker_uri)
 
+    async def invite_agent(self, speaker_uri: str, service_url: str = "local://agent") -> None:
+        """Send an OFP InviteEvent to a newly spawned agent."""
+        from openfloor import To
+        envelope = Envelope(
+            sender=self._make_sender(),
+            conversation=self._make_conversation(),
+            events=[
+                InviteEvent(
+                    to=To(speakerUri=speaker_uri, serviceUrl=service_url),
+                )
+            ],
+        )
+        await self._send(envelope)
+
+    async def send_uninvite(self, speaker_uri: str, reason: str = "@complete") -> None:
+        """Send an OFP UninviteEvent to remove an agent from the conversation."""
+        from openfloor import To
+        envelope = Envelope(
+            sender=self._make_sender(),
+            conversation=self._make_conversation(),
+            events=[
+                UninviteEvent(
+                    to=To(speakerUri=speaker_uri),
+                    reason=reason,
+                )
+            ],
+        )
+        await self._send(envelope)
+
     def register_agent(self, speaker_uri: str, name: str) -> None:
         """Register a local agent with the floor manager."""
         self._agents[speaker_uri] = name
@@ -415,9 +444,12 @@ class FloorManager:
                             f"--- END OF STORY SO FAR ---\n"
                             f"Continue directly from where the story left off."
                         )
-                    # Grant before sending directive; use private routing (OFP private message)
-                    await self.grant_to(target_uri)
+                    # Send directive FIRST (agent sets its task instruction from this),
+                    # then grant floor.  The directive comes from the floor manager as a
+                    # private OFP whisper; BaseLLMAgent skips request_floor() for these
+                    # so there is no spurious floor request racing the explicit grant.
                     await self._send_directed_utterance(directive, target_uri=target_uri)
+                    await self.grant_to(target_uri)
                     if self._renderer:
                         self._renderer.show_system_event(
                             f"[Orchestrator → {target_name}]: {task[:60]}"
@@ -466,6 +498,8 @@ class FloorManager:
                 target_name = m.group(1).strip()
                 target_uri = self._resolve_agent_uri_by_name(target_name)
                 if target_uri:
+                    # OFP: send UninviteEvent before removing from the floor
+                    await self.send_uninvite(target_uri, reason="@brokenPolicy")
                     self.unregister_agent(target_uri)
                     await self._bus.unregister(target_uri)
                     if self._renderer:
@@ -613,6 +647,16 @@ class FloorManager:
                 await self._handle_yield_floor(envelope)
             elif event_type == "publishManifests":
                 self._handle_publish_manifests(sender_uri, event)
+            elif event_type == "acceptInvite":
+                agent_name = self._agents.get(sender_uri, sender_uri.split(":")[-1])
+                logger.debug("Agent %s accepted invite", agent_name)
+                if self._renderer:
+                    self._renderer.show_system_event(f"{agent_name} joined the conversation")
+            elif event_type == "declineInvite":
+                agent_name = self._agents.get(sender_uri, sender_uri.split(":")[-1])
+                logger.warning("Agent %s declined invite", agent_name)
+                self.unregister_agent(sender_uri)
+                await self._bus.unregister(sender_uri)
             elif event_type == "bye":
                 self.unregister_agent(sender_uri)
                 await self._bus.unregister(sender_uri)

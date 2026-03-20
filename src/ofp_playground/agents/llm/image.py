@@ -120,6 +120,13 @@ class ImageAgent(BasePlaygroundAgent):
         if sender_uri == self.speaker_uri:
             return
         if sender_uri and "floor-manager" in sender_uri:
+            # Check for orchestrator [DIRECTIVE for Name]: instruction
+            text = self._extract_text_from_envelope(envelope)
+            if text:
+                m = re.search(rf"\[DIRECTIVE for {re.escape(self._name)}\]:\s*(.+)", text, re.IGNORECASE)
+                if m:
+                    self._raw_prompt = f"{self._style}, {m.group(1).strip()}"
+                    # Orchestrator will explicitly grant floor — don't request
             return
         text = self._extract_text_from_envelope(envelope)
         if not text:
@@ -168,6 +175,22 @@ class ImageAgent(BasePlaygroundAgent):
                 await self._handle_grant_floor()
             elif event_type == "revokeFloor":
                 self._has_floor = False
+            elif event_type == "invite":
+                from openfloor import Event, To
+                from ofp_playground.bus.message_bus import FLOOR_MANAGER_URI
+                accept_envelope = Envelope(
+                    sender=self._make_sender(),
+                    conversation=self._make_conversation(),
+                    events=[Event(
+                        eventType="acceptInvite",
+                        to=To(speakerUri=FLOOR_MANAGER_URI),
+                        reason="Ready to participate",
+                    )],
+                )
+                await self.send_envelope(accept_envelope)
+            elif event_type == "uninvite":
+                logger.info("[%s] received uninvite — stopping", self._name)
+                self._running = False
 
     async def run(self) -> None:
         self._running = True

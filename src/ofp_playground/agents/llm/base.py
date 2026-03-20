@@ -210,8 +210,11 @@ class BaseLLMAgent(BasePlaygroundAgent):
         if "[DIRECTIVE for" in text:
             assigned = self._parse_showrunner_message(text)
             if assigned and not self._has_floor and self._consecutive_errors < 3:
-                # Bypass relevance filter — ShowRunner already decided we should speak
-                await self.request_floor("responding to ShowRunner directive")
+                # Orchestrator directives arrive as private messages FROM the floor manager
+                # and always come paired with an explicit grantFloor — no need to request.
+                # ShowRunner directives come from a peer agent; those need request_floor().
+                if sender_uri != FLOOR_MANAGER_URI:
+                    await self.request_floor("responding to ShowRunner directive")
             # Either way, don't fall through to generic floor-request logic
             return
 
@@ -289,3 +292,20 @@ class BaseLLMAgent(BasePlaygroundAgent):
                 await self._handle_grant_floor()
             elif event_type == "revokeFloor":
                 self._has_floor = False
+            elif event_type == "invite":
+                # OFP: respond with acceptInvite directed to the floor manager
+                from openfloor import Event, To
+                accept_envelope = Envelope(
+                    sender=self._make_sender(),
+                    conversation=self._make_conversation(),
+                    events=[Event(
+                        eventType="acceptInvite",
+                        to=To(speakerUri=FLOOR_MANAGER_URI),
+                        reason="Ready to participate",
+                    )],
+                )
+                await self.send_envelope(accept_envelope)
+            elif event_type == "uninvite":
+                # OFP: floor manager is removing this agent — stop cleanly
+                logger.info("[%s] received uninvite — stopping", self._name)
+                self._running = False

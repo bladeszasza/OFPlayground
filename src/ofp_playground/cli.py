@@ -713,6 +713,12 @@ async def _spawn_llm_agent(
         registry.register(agent)
         model_name = model_override or getattr(agent, "_model", "default")
         renderer.show_system_event(f"Spawned {name} ({agent_type} / {model_name}) — joining conversation...")
+        # Pre-register the agent's queue on the bus so that any messages sent
+        # immediately after spawn (e.g. [ASSIGN] directives) are not dropped.
+        # agent.run() will call bus.register() again — that's a harmless no-op.
+        await bus.register(agent.speaker_uri, agent.queue)
+        # Send OFP-compliant InviteEvent so the agent knows it joined the floor.
+        await floor.invite_agent(agent.speaker_uri, getattr(agent, "_service_url", "local://agent"))
         asyncio.create_task(agent.run())
 
 
