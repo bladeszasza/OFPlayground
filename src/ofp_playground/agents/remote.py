@@ -50,6 +50,11 @@ KNOWN_REMOTE_AGENTS: dict[str, tuple[str, str, str]] = {
         "https://yahandhjjf.us-east-1.awsapprunner.com/",
         "Encyclopedic research and authoritative factual information",
     ),
+    "wiki": (
+        "Wikipedia Research Specialist",
+        "https://yahandhjjf.us-east-1.awsapprunner.com/",
+        "Encyclopedic research and authoritative factual information",
+    ),
     "stella": (
         "Stella",
         "https://openvoice-stella.vercel.app",

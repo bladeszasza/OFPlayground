@@ -370,7 +370,10 @@ class FloorManager:
                             self._renderer.show_system_event(
                                 f"Round {self._round_count} complete — Director has the floor"
                             )
-                    else:
+                    elif len(text_agents) >= 3:
+                        # Only inject a round summary when there are enough agents
+                        # for context injection to be meaningful (3+ text agents).
+                        # With 1-2 agents (e.g. human + echo) it's just noise.
                         await self._inject_round_summary()
 
         # Display
