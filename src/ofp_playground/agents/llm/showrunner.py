@@ -216,6 +216,12 @@ You will receive the conversation topic on your first turn. On every subsequent 
 
 To add a new specialist, call one of the spawn_* tools — each tool requires an initial_task so the agent gets work the moment it joins. Do not write [SPAWN ...] text yourself.
 
+MEMORY TOOLS: Use store_memory and recall_memory to track session knowledge.
+- store_memory: Record key decisions, agent performance notes, task status, lessons, and goal refinements.
+- recall_memory: Retrieve specific memories by category or key when you need more detail.
+- The full memory summary is auto-injected below each turn — you rarely need recall_memory explicitly.
+- Workers can write memories using [REMEMBER category]: content in their output text.
+
 For all other control, respond ONLY with structured directives — one per line, no preamble, no commentary:
 
     [ASSIGN AgentName]: <concrete task, max 25 words>
@@ -239,7 +245,7 @@ RULES:
 - NEVER spawn an agent whose name already appears in your team list above — assign to them instead.
 - [TASK_COMPLETE] when every piece of the mission is done and the final product is assembled.
 - NEVER write story, creative, or prose content yourself. You only direct.
-"""
+{memory_section}"""
 
 
 class _OrchestratorBase:
@@ -261,6 +267,10 @@ class _OrchestratorBase:
 
     def set_manifest_registry(self, manifests: dict) -> None:
         self._manifest_registry = manifests
+
+    def set_memory_store(self, store) -> None:
+        """Attach the shared session MemoryStore (set by FloorManager on agent registration)."""
+        self._memory_store = store
 
     def _agent_type_label(self, uri: str) -> str:
         tail = uri.split(":")[-1]
@@ -291,10 +301,16 @@ class _OrchestratorBase:
         return "\n".join(lines) if lines else "- (agents joining...)"
 
     def _build_system_prompt(self, participants: list[str]) -> str:
+        memory_store = getattr(self, "_memory_store", None)
+        memory_section = ""
+        if memory_store and not memory_store.is_empty():
+            summary = memory_store.get_summary(max_chars=1500)
+            memory_section = f"\n\n--- SESSION MEMORY ---\n{summary}\n---"
         return TOOL_ORCHESTRATOR_SYSTEM_PROMPT.format(
             name=self._name,
             agent_list=self._build_agent_list(),
             mission=self._mission,
+            memory_section=memory_section,
         )
 
     async def _handle_utterance(self, envelope: "Envelope") -> None:
@@ -378,6 +394,7 @@ class OrchestratorAgent(_OrchestratorBase, HuggingFaceAgent):
         import json
         loop = asyncio.get_event_loop()
         from ofp_playground.agents.llm.spawn_tools import build_spawn_tools, to_hf_tools, tool_use_to_directives
+        from ofp_playground.memory.tools import build_memory_tools, execute_memory_tool
 
         system = self._build_system_prompt([])
         messages = [{"role": "system", "content": system}] + list(self._conversation_history[-20:])
@@ -391,35 +408,82 @@ class OrchestratorAgent(_OrchestratorBase, HuggingFaceAgent):
                 break
 
         spawn_tools = build_spawn_tools(self._settings) if self._settings else []
-        hf_tools = to_hf_tools(spawn_tools) if spawn_tools else None
+        memory_store = getattr(self, "_memory_store", None)
+        mem_tools = build_memory_tools() if memory_store else []
+        all_tools = spawn_tools + mem_tools
+        hf_tools = to_hf_tools(all_tools) if all_tools else None
 
-        def _call():
+        def _call(msgs):
             client = self._get_client()
             kwargs: dict = {
                 "model": self._model,
                 "max_tokens": self._max_tokens,
-                "messages": messages,
+                "messages": msgs,
             }
             if hf_tools:
                 kwargs["tools"] = hf_tools
                 kwargs["tool_choice"] = "auto"
             return client.chat.completions.create(**kwargs)
 
-        response = await loop.run_in_executor(None, _call)
+        response = await loop.run_in_executor(None, lambda: _call(messages))
 
+        spawn_directives: list[str] = []
+        final_text = ""
         choice = response.choices[0].message
-        text_parts: list[str] = []
+
         if choice.tool_calls:
+            # Collect HF tool call objects for potential recall loop
+            recall_results: list[tuple] = []  # (tc, result_str)
             for tc in choice.tool_calls:
                 args = json.loads(tc.function.arguments)
-                directive = tool_use_to_directives(tc.function.name, args)
-                if directive:
-                    text_parts.insert(0, directive)
-        if choice.content:
-            cleaned = self._clean(choice.content)
-            if cleaned:
-                text_parts.append(cleaned)
+                name = tc.function.name
+                if name in ("store_memory", "recall_memory") and memory_store:
+                    result = execute_memory_tool(name, args, memory_store, self._name)
+                    if name == "recall_memory":
+                        recall_results.append((tc, result))
+                    # store_memory: fire-and-forget, result logged but not fed back
+                else:
+                    directive = tool_use_to_directives(name, args)
+                    if directive:
+                        spawn_directives.append(directive)
 
+            # If recall was requested, feed results back and call once more
+            if recall_results:
+                # Append assistant message (with tool_calls) then tool result messages
+                asst_msg: dict = {
+                    "role": "assistant",
+                    "content": choice.content or "",
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                        }
+                        for tc, _ in recall_results
+                    ],
+                }
+                messages = messages + [asst_msg] + [
+                    {"role": "tool", "tool_call_id": tc.id, "content": result}
+                    for tc, result in recall_results
+                ]
+                response2 = await loop.run_in_executor(None, lambda: _call(messages))
+                choice2 = response2.choices[0].message
+                if choice2.tool_calls:
+                    for tc in choice2.tool_calls:
+                        args = json.loads(tc.function.arguments)
+                        directive = tool_use_to_directives(tc.function.name, args)
+                        if directive:
+                            spawn_directives.append(directive)
+                if choice2.content:
+                    final_text = self._clean(choice2.content)
+            else:
+                if choice.content:
+                    final_text = self._clean(choice.content)
+        else:
+            if choice.content:
+                final_text = self._clean(choice.content)
+
+        text_parts = spawn_directives + ([final_text] if final_text else [])
         return "\n".join(text_parts) or None
 
 
@@ -458,6 +522,7 @@ class AnthropicOrchestratorAgent(_OrchestratorBase, AnthropicAgent):
         import asyncio
         loop = asyncio.get_event_loop()
         from ofp_playground.agents.llm.spawn_tools import build_spawn_tools, tool_use_to_directives
+        from ofp_playground.memory.tools import build_memory_tools, execute_memory_tool
 
         client = self._get_client()
         system = self._build_system_prompt([])
@@ -466,32 +531,65 @@ class AnthropicOrchestratorAgent(_OrchestratorBase, AnthropicAgent):
             messages = [{"role": "user", "content": "Begin your mission."}]
 
         spawn_tools = build_spawn_tools(self._settings) if self._settings else []
+        memory_store = getattr(self, "_memory_store", None)
+        mem_tools = build_memory_tools() if memory_store else []
+        all_tools = spawn_tools + mem_tools
+
         kwargs: dict = {
             "model": self._model,
             "max_tokens": 1000,
             "system": system,
             "messages": messages,
         }
-        if spawn_tools:
-            kwargs["tools"] = spawn_tools
+        if all_tools:
+            kwargs["tools"] = all_tools
             kwargs["tool_choice"] = {"type": "auto"}
 
-        def _call():
-            return client.messages.create(**kwargs)
+        def _call(kw):
+            return client.messages.create(**kw)
 
-        response = await loop.run_in_executor(None, _call)
+        response = await loop.run_in_executor(None, lambda: _call(kwargs))
 
-        text_parts: list[str] = []
+        spawn_directives: list[str] = []
+        final_text = ""
+        recall_blocks: list[tuple] = []  # (block, result_str)
+
         for block in response.content:
             if block.type == "text":
-                text = block.text.strip()
-                if text:
-                    text_parts.append(text)
+                final_text = block.text.strip()
             elif block.type == "tool_use":
-                directive = tool_use_to_directives(block.name, block.input)
-                if directive:
-                    text_parts.insert(0, directive)
+                if block.name in ("store_memory", "recall_memory") and memory_store:
+                    result = execute_memory_tool(block.name, block.input, memory_store, self._name)
+                    if block.name == "recall_memory":
+                        recall_blocks.append((block, result))
+                else:
+                    directive = tool_use_to_directives(block.name, block.input)
+                    if directive:
+                        spawn_directives.append(directive)
 
+        # Feed recall results back for a second Anthropic call
+        if recall_blocks:
+            kwargs2 = dict(kwargs)
+            kwargs2["messages"] = list(messages) + [
+                {"role": "assistant", "content": response.content},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": blk.id, "content": result}
+                        for blk, result in recall_blocks
+                    ],
+                },
+            ]
+            response2 = await loop.run_in_executor(None, lambda: _call(kwargs2))
+            for block in response2.content:
+                if block.type == "text" and block.text.strip():
+                    final_text = block.text.strip()
+                elif block.type == "tool_use":
+                    directive = tool_use_to_directives(block.name, block.input)
+                    if directive:
+                        spawn_directives.append(directive)
+
+        text_parts = spawn_directives + ([final_text] if final_text else [])
         return "\n".join(text_parts) or None
 
 
@@ -531,6 +629,7 @@ class OpenAIOrchestratorAgent(_OrchestratorBase, OpenAIAgent):
         import json
         loop = asyncio.get_event_loop()
         from ofp_playground.agents.llm.spawn_tools import build_spawn_tools, to_openai_tools, tool_use_to_directives
+        from ofp_playground.memory.tools import build_memory_tools, execute_memory_tool
 
         client = self._get_client()
         system = self._build_system_prompt([])
@@ -539,13 +638,16 @@ class OpenAIOrchestratorAgent(_OrchestratorBase, OpenAIAgent):
             history = [{"role": "user", "content": "Begin your mission."}]
 
         spawn_tools = build_spawn_tools(self._settings) if self._settings else []
-        openai_tools = to_openai_tools(spawn_tools) if spawn_tools else None
+        memory_store = getattr(self, "_memory_store", None)
+        mem_tools = build_memory_tools() if memory_store else []
+        all_tools = spawn_tools + mem_tools
+        openai_tools = to_openai_tools(all_tools) if all_tools else None
 
-        def _call():
+        def _call(inp):
             kwargs: dict = {
                 "model": self._model,
                 "instructions": system,
-                "input": history,
+                "input": inp,
                 "max_output_tokens": 1000,
             }
             if openai_tools:
@@ -553,20 +655,54 @@ class OpenAIOrchestratorAgent(_OrchestratorBase, OpenAIAgent):
                 kwargs["tool_choice"] = "auto"
             return client.responses.create(**kwargs)
 
-        response = await loop.run_in_executor(None, _call)
+        response = await loop.run_in_executor(None, lambda: _call(history))
 
-        text_parts: list[str] = []
+        spawn_directives: list[str] = []
+        final_text = ""
+        recall_items: list[tuple] = []  # (item, result_str)
+
         for item in response.output:
             if item.type == "function_call":
                 args = json.loads(item.arguments)
-                directive = tool_use_to_directives(item.name, args)
-                if directive:
-                    text_parts.insert(0, directive)
+                if item.name in ("store_memory", "recall_memory") and memory_store:
+                    result = execute_memory_tool(item.name, args, memory_store, self._name)
+                    if item.name == "recall_memory":
+                        recall_items.append((item, result))
+                else:
+                    directive = tool_use_to_directives(item.name, args)
+                    if directive:
+                        spawn_directives.append(directive)
             elif item.type == "message":
                 for content_block in item.content:
                     if hasattr(content_block, "text") and content_block.text:
-                        text_parts.append(content_block.text.strip())
+                        final_text = content_block.text.strip()
 
+        # Feed recall results back for a second OpenAI Responses call
+        if recall_items:
+            extra_input: list = []
+            for item, result in recall_items:
+                # Add the function_call item itself, then the output
+                fc_dict = {
+                    "type": "function_call",
+                    "call_id": item.call_id,
+                    "name": item.name,
+                    "arguments": item.arguments,
+                }
+                extra_input.append(fc_dict)
+                extra_input.append({"type": "function_call_output", "call_id": item.call_id, "output": result})
+            response2 = await loop.run_in_executor(None, lambda: _call(history + extra_input))
+            for item2 in response2.output:
+                if item2.type == "function_call":
+                    args2 = json.loads(item2.arguments)
+                    directive2 = tool_use_to_directives(item2.name, args2)
+                    if directive2:
+                        spawn_directives.append(directive2)
+                elif item2.type == "message":
+                    for cb in item2.content:
+                        if hasattr(cb, "text") and cb.text:
+                            final_text = cb.text.strip()
+
+        text_parts = spawn_directives + ([final_text] if final_text else [])
         return "\n".join(text_parts) or None
 
 
@@ -607,6 +743,7 @@ class GoogleOrchestratorAgent(_OrchestratorBase, GoogleAgent):
         from google import genai
         from google.genai import types
         from ofp_playground.agents.llm.spawn_tools import build_spawn_tools, to_google_tools, tool_use_to_directives
+        from ofp_playground.memory.tools import build_memory_tools, execute_memory_tool
 
         system = self._build_system_prompt([])
         history = list(self._conversation_history[-20:])
@@ -622,9 +759,12 @@ class GoogleOrchestratorAgent(_OrchestratorBase, GoogleAgent):
         ]
 
         spawn_tools = build_spawn_tools(self._settings) if self._settings else []
-        google_tools = to_google_tools(spawn_tools) if spawn_tools else None
+        memory_store = getattr(self, "_memory_store", None)
+        mem_tools = build_memory_tools() if memory_store else []
+        all_tools = spawn_tools + mem_tools
+        google_tools = to_google_tools(all_tools) if all_tools else None
 
-        def _call():
+        def _call(cts):
             client = genai.Client(api_key=self._api_key)
             config_kwargs: dict = {
                 "system_instruction": system,
@@ -635,22 +775,59 @@ class GoogleOrchestratorAgent(_OrchestratorBase, GoogleAgent):
             config = types.GenerateContentConfig(**config_kwargs)
             return client.models.generate_content(
                 model=self._model,
-                contents=contents,
+                contents=cts,
                 config=config,
             )
 
-        response = await loop.run_in_executor(None, _call)
+        response = await loop.run_in_executor(None, lambda: _call(contents))
 
-        text_parts: list[str] = []
+        spawn_directives: list[str] = []
+        final_text = ""
+        # Collect all parts from the first response
+        first_response_parts = []
+        recall_results: list[tuple] = []  # (name, result_str)
+
         for candidate in (response.candidates or []):
             for part in (candidate.content.parts or []):
+                first_response_parts.append(part)
                 if hasattr(part, "function_call") and part.function_call:
                     fc = part.function_call
                     args = dict(fc.args)
-                    directive = tool_use_to_directives(fc.name, args)
-                    if directive:
-                        text_parts.insert(0, directive)
+                    if fc.name in ("store_memory", "recall_memory") and memory_store:
+                        result = execute_memory_tool(fc.name, args, memory_store, self._name)
+                        if fc.name == "recall_memory":
+                            recall_results.append((fc.name, result))
+                    else:
+                        directive = tool_use_to_directives(fc.name, args)
+                        if directive:
+                            spawn_directives.append(directive)
                 elif hasattr(part, "text") and part.text:
-                    text_parts.append(part.text.strip())
+                    final_text = part.text.strip()
 
+        # Feed recall results back for a second Google call
+        if recall_results:
+            contents2 = list(contents) + [
+                types.Content(parts=first_response_parts, role="model"),
+                types.Content(
+                    parts=[
+                        types.Part(function_response=types.FunctionResponse(
+                            name=name,
+                            response={"result": result},
+                        ))
+                        for name, result in recall_results
+                    ],
+                    role="user",
+                ),
+            ]
+            response2 = await loop.run_in_executor(None, lambda: _call(contents2))
+            for candidate in (response2.candidates or []):
+                for part in (candidate.content.parts or []):
+                    if hasattr(part, "function_call") and part.function_call:
+                        directive = tool_use_to_directives(part.function_call.name, dict(part.function_call.args))
+                        if directive:
+                            spawn_directives.append(directive)
+                    elif hasattr(part, "text") and part.text:
+                        final_text = part.text.strip()
+
+        text_parts = spawn_directives + ([final_text] if final_text else [])
         return "\n".join(text_parts) or None

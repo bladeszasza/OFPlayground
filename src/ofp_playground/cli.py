@@ -354,6 +354,8 @@ async def _run_session(
             await asyncio.sleep(1.0)
             if topic:
                 renderer.show_system_event(f'Topic: "{topic}"')
+                # Seed the session memory store with the original mission/goal
+                floor._memory_store.seed_goal(topic)
                 await _seed_topic(topic, floor, bus)
                 # If human holds the floor in sequential mode, yield it so agents
                 # can respond to the seeded topic; human re-queues for next turn.
@@ -783,6 +785,9 @@ async def _spawn_llm_agent(
         # Give orchestrator access to the live manifest registry for capability-aware prompts
         if hasattr(agent, "set_manifest_registry"):
             agent.set_manifest_registry(floor._manifests)
+        # Give all agents access to the shared session memory store
+        if hasattr(agent, "set_memory_store"):
+            agent.set_memory_store(floor._memory_store)
         floor.register_agent(agent.speaker_uri, agent.name)
         registry.register(agent)
         model_name = model_override or getattr(agent, "_model", "default")

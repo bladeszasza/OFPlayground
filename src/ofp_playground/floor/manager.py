@@ -30,6 +30,7 @@ from openfloor import (
 from ofp_playground.bus.message_bus import MessageBus, FLOOR_MANAGER_URI
 from ofp_playground.floor.history import ConversationHistory
 from ofp_playground.floor.policy import FloorController, FloorPolicy
+from ofp_playground.memory.store import MemoryStore
 from ofp_playground.models.artifact import Utterance
 from ofp_playground.renderer.terminal import TerminalRenderer
 
@@ -92,6 +93,7 @@ class FloorManager:
         self._last_worker_text: str = ""  # most recent non-orchestrator utterance text
         self._last_worker_name: str = ""  # speaker name for the above
         self._manifests: dict[str, "Manifest"] = {}  # speakerUri → Manifest
+        self._memory_store: MemoryStore = MemoryStore()  # ephemeral session memory
 
     @property
     def speaker_uri(self) -> str:
@@ -339,8 +341,10 @@ class FloorManager:
                 # SHOWRUNNER_DRIVEN: every worker utterance returns floor to orchestrator
                 is_media = media_key is not None  # detected from OFP features, covers "3d" too
                 if not is_media:
-                    # Record last worker output for manuscript accumulation on [ACCEPT]
-                    self._last_worker_text = text
+                    # Parse [REMEMBER] directives from worker output (text-directive memory fallback)
+                    cleaned_text = self._parse_worker_memory(text, sender_name)
+                    # Record for manuscript accumulation on [ACCEPT]
+                    self._last_worker_text = cleaned_text
                     self._last_worker_name = sender_name
                     self._assigned_uri = None  # clear assignment — orchestrator decides next
                     await self.grant_to(self._orchestrator_uri)
@@ -473,6 +477,9 @@ class FloorManager:
                             f"--- END OF STORY SO FAR ---\n"
                             f"Continue directly from where the story left off."
                         )
+                    if not self._memory_store.is_empty() and not is_remote:
+                        memory_summary = self._memory_store.get_summary(max_chars=600)
+                        directive += f"\n\n--- SESSION MEMORY ---\n{memory_summary}\n---"
                     # Send directive FIRST (agent sets its task instruction from this),
                     # then grant floor.  The directive comes from the floor manager as a
                     # private OFP whisper; BaseLLMAgent skips request_floor() for these
@@ -580,10 +587,23 @@ class FloorManager:
                 self.stop()
                 return
 
+    def _parse_worker_memory(self, text: str, author: str) -> str:
+        """Parse [REMEMBER category]: content directives from worker text output.
+
+        Executes each directive against the session memory store and returns
+        the text with [REMEMBER] lines stripped so they don't pollute the manuscript.
+        """
+        from ofp_playground.memory.tools import parse_remember_directives
+        return parse_remember_directives(text, self._memory_store, author)
+
     def _output_manuscript(self) -> None:
-        """Print the assembled manuscript and save it to a file."""
+        """Print the assembled manuscript and save it to a file.
+
+        Also writes a companion memory dump (JSON) when the memory store is non-empty.
+        """
         if not self._manuscript:
             return
+        import json
         import os
         from datetime import datetime
 
@@ -598,6 +618,17 @@ class FloorManager:
         except OSError as e:
             logger.warning("Could not save manuscript: %s", e)
             filepath = None
+
+        # Companion memory dump
+        if not self._memory_store.is_empty():
+            mem_filename = f"memory_{ts}_{conv_short}.json"
+            mem_filepath = os.path.join(os.getcwd(), mem_filename)
+            try:
+                with open(mem_filepath, "w", encoding="utf-8") as f:
+                    json.dump(self._memory_store.to_dict(), f, indent=2)
+                logger.info("Memory dump saved to %s", mem_filepath)
+            except OSError as e:
+                logger.warning("Could not save memory dump: %s", e)
 
         if self._renderer:
             self._renderer.show_manuscript(text, filepath=filepath)

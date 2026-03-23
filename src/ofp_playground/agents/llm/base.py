@@ -69,6 +69,7 @@ class BaseLLMAgent(BasePlaygroundAgent):
         self._consecutive_errors: int = 0
         self._name_registry: dict[str, str] = {}
         self._current_director_instruction: str = ""  # injected into system prompt at generation time
+        self._memory_store = None  # set via set_memory_store() when in showrunner_driven mode
 
     @property
     def task_type(self) -> str:
@@ -96,6 +97,10 @@ class BaseLLMAgent(BasePlaygroundAgent):
         """Attach the shared URI→name registry (floor._agents reference)."""
         self._name_registry = registry
 
+    def set_memory_store(self, store) -> None:
+        """Attach the shared session MemoryStore (set by FloorManager on agent registration)."""
+        self._memory_store = store
+
     def _build_system_prompt(self, participants: list[str]) -> str:
         base = SYSTEM_PROMPT_TEMPLATE.format(
             name=self._name,
@@ -104,6 +109,9 @@ class BaseLLMAgent(BasePlaygroundAgent):
         )
         if self._current_director_instruction:
             base += f"\n\nYOUR TASK THIS ROUND: {self._current_director_instruction}\nWrite your response now. Do not repeat this instruction."
+        if self._memory_store and not self._memory_store.is_empty():
+            memory_summary = self._memory_store.get_summary(max_chars=600)
+            base += f"\n\n--- SESSION MEMORY ---\n{memory_summary}\n---"
         return base
 
     def _append_to_context(self, speaker_name: str, text: str, is_self: bool) -> None:
