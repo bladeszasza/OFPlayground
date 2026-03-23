@@ -280,6 +280,34 @@ class _OrchestratorBase:
         """Attach the shared session MemoryStore (set by FloorManager on agent registration)."""
         self._memory_store = store
 
+    def _resolve_name_in_registry(self, name: str) -> Optional[str]:
+        """Return the speakerUri if *name* (or its underscore variant) is already on the floor.
+
+        Comparison is case-insensitive with underscores treated as spaces so that
+        an orchestrator asking for ``Analyst`` or ``Wikipedia_Research_Specialist``
+        correctly finds an already-registered agent.
+        """
+        normalized = name.lower().replace("_", " ")
+        for uri, registered in self._name_registry.items():
+            if registered.lower().replace("_", " ") == normalized:
+                return uri
+        return None
+
+    def _spawn_or_assign(self, tool_name: str, args: dict) -> str:
+        """Convert a spawn tool call to a directive string.
+
+        * If the named agent is **already on the floor**: return only ``[ASSIGN name]: task``
+          so no duplicate spawn attempt is emitted.
+        * If the agent is **new**: return the full ``[SPAWN ...]\n[ASSIGN ...]`` directive.
+        """
+        from ofp_playground.agents.llm.spawn_tools import tool_use_to_directives
+        agent_name = args.get("name", "")
+        initial_task = args.get("initial_task", "")
+        if agent_name and self._resolve_name_in_registry(agent_name):
+            # Already on the floor — only issue an assignment, skip the spawn
+            return f"[ASSIGN {agent_name}]: {initial_task}" if initial_task else ""
+        return tool_use_to_directives(tool_name, args)
+
     def _agent_type_label(self, uri: str) -> str:
         tail = uri.split(":")[-1]
         for prefix, label in self._URI_TYPE_LABELS.items():
@@ -457,7 +485,7 @@ class OrchestratorAgent(_OrchestratorBase, HuggingFaceAgent):
                     if directive:
                         spawn_directives.append(directive)
                 else:
-                    directive = tool_use_to_directives(name, args)
+                    directive = self._spawn_or_assign(name, args)
                     if directive:
                         spawn_directives.append(directive)
 
@@ -485,7 +513,7 @@ class OrchestratorAgent(_OrchestratorBase, HuggingFaceAgent):
                 if choice2.tool_calls:
                     for tc in choice2.tool_calls:
                         args = json.loads(tc.function.arguments)
-                        directive = tool_use_to_directives(tc.function.name, args)
+                        directive = self._spawn_or_assign(tc.function.name, args)
                         if directive:
                             spawn_directives.append(directive)
                 if choice2.content:
@@ -583,7 +611,7 @@ class AnthropicOrchestratorAgent(_OrchestratorBase, AnthropicAgent):
                     if directive:
                         spawn_directives.append(directive)
                 else:
-                    directive = tool_use_to_directives(block.name, block.input)
+                    directive = self._spawn_or_assign(block.name, block.input)
                     if directive:
                         spawn_directives.append(directive)
 
@@ -605,7 +633,7 @@ class AnthropicOrchestratorAgent(_OrchestratorBase, AnthropicAgent):
                 if block.type == "text" and block.text.strip():
                     final_text = block.text.strip()
                 elif block.type == "tool_use":
-                    directive = tool_use_to_directives(block.name, block.input)
+                    directive = self._spawn_or_assign(block.name, block.input)
                     if directive:
                         spawn_directives.append(directive)
 
@@ -695,7 +723,7 @@ class OpenAIOrchestratorAgent(_OrchestratorBase, OpenAIAgent):
                     if directive:
                         spawn_directives.append(directive)
                 else:
-                    directive = tool_use_to_directives(item.name, args)
+                    directive = self._spawn_or_assign(item.name, args)
                     if directive:
                         spawn_directives.append(directive)
             elif item.type == "message":
@@ -720,7 +748,7 @@ class OpenAIOrchestratorAgent(_OrchestratorBase, OpenAIAgent):
             for item2 in response2.output:
                 if item2.type == "function_call":
                     args2 = json.loads(item2.arguments)
-                    directive2 = tool_use_to_directives(item2.name, args2)
+                    directive2 = self._spawn_or_assign(item2.name, args2)
                     if directive2:
                         spawn_directives.append(directive2)
                 elif item2.type == "message":
@@ -830,7 +858,7 @@ class GoogleOrchestratorAgent(_OrchestratorBase, GoogleAgent):
                         if directive:
                             spawn_directives.append(directive)
                     else:
-                        directive = tool_use_to_directives(fc.name, args)
+                        directive = self._spawn_or_assign(fc.name, args)
                         if directive:
                             spawn_directives.append(directive)
                 elif hasattr(part, "text") and part.text:
@@ -855,7 +883,7 @@ class GoogleOrchestratorAgent(_OrchestratorBase, GoogleAgent):
             for candidate in (response2.candidates or []):
                 for part in (candidate.content.parts or []):
                     if hasattr(part, "function_call") and part.function_call:
-                        directive = tool_use_to_directives(part.function_call.name, dict(part.function_call.args))
+                        directive = self._spawn_or_assign(part.function_call.name, dict(part.function_call.args))
                         if directive:
                             spawn_directives.append(directive)
                     elif hasattr(part, "text") and part.text:

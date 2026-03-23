@@ -120,3 +120,101 @@ async def test_human_does_not_immediately_rerequest_after_speaking():
     assert sent == [True]
     assert yielded == ["@complete"]
     assert requested == []
+
+
+# ---------------------------------------------------------------------------
+# _OrchestratorBase helpers — _resolve_name_in_registry, _spawn_or_assign
+# ---------------------------------------------------------------------------
+
+class _MockOrchestratorBase:
+    """Minimal stub that enables testing _OrchestratorBase methods without a real LLM."""
+
+    def __init__(self, name_registry: dict):
+        self._name_registry = name_registry
+        self._name = "Director"
+        self._mission = "test"
+        self._manifest_registry = {}
+        self._memory_store = None
+        self.speaker_uri = "tag:test:orchestrator"
+
+    # Pull in the real implementations from the mixin
+    from ofp_playground.agents.llm.showrunner import _OrchestratorBase
+    _resolve_name_in_registry = _OrchestratorBase._resolve_name_in_registry
+    _spawn_or_assign = _OrchestratorBase._spawn_or_assign
+
+
+def test_resolve_name_exact():
+    o = _MockOrchestratorBase({"tag:test:analyst": "Analyst"})
+    assert o._resolve_name_in_registry("Analyst") == "tag:test:analyst"
+
+
+def test_resolve_name_case_insensitive():
+    o = _MockOrchestratorBase({"tag:test:analyst": "Analyst"})
+    assert o._resolve_name_in_registry("ANALYST") == "tag:test:analyst"
+    assert o._resolve_name_in_registry("analyst") == "tag:test:analyst"
+
+
+def test_resolve_name_underscore_to_space():
+    o = _MockOrchestratorBase({"tag:test:wiki": "Wikipedia Research Specialist"})
+    assert o._resolve_name_in_registry("Wikipedia_Research_Specialist") == "tag:test:wiki"
+
+
+def test_resolve_name_space_to_underscore():
+    o = _MockOrchestratorBase({"tag:test:wiki": "Wikipedia_Research_Specialist"})
+    assert o._resolve_name_in_registry("Wikipedia Research Specialist") == "tag:test:wiki"
+
+
+def test_resolve_name_not_found():
+    o = _MockOrchestratorBase({"tag:test:analyst": "Analyst"})
+    assert o._resolve_name_in_registry("Unknown") is None
+
+
+def test_spawn_or_assign_new_agent():
+    """When agent is NOT in registry, full [SPAWN]+[ASSIGN] directive is returned."""
+    o = _MockOrchestratorBase({})
+    result = o._spawn_or_assign("spawn_text_agent", {
+        "name": "Writer",
+        "system": "You write stories",
+        "initial_task": "Write chapter 1",
+        "provider": "hf",
+    })
+    assert "[SPAWN" in result
+    assert "[ASSIGN Writer]: Write chapter 1" in result
+
+
+def test_spawn_or_assign_existing_agent_skips_spawn():
+    """When agent IS in registry, only [ASSIGN] is returned — no [SPAWN]."""
+    o = _MockOrchestratorBase({"tag:test:analyst": "Analyst"})
+    result = o._spawn_or_assign("spawn_text_agent", {
+        "name": "Analyst",
+        "system": "You analyse",
+        "initial_task": "Analyse the data",
+        "provider": "openai",
+    })
+    assert "[SPAWN" not in result
+    assert result == "[ASSIGN Analyst]: Analyse the data"
+
+
+def test_spawn_or_assign_existing_underscore_name():
+    """Underscore→space normalization works in spawn redirect too."""
+    o = _MockOrchestratorBase({"tag:test:wiki": "Wikipedia Research Specialist"})
+    result = o._spawn_or_assign("spawn_text_agent", {
+        "name": "Wikipedia_Research_Specialist",
+        "system": "Research",
+        "initial_task": "Summarise findings",
+        "provider": "anthropic",
+    })
+    assert "[SPAWN" not in result
+    assert "[ASSIGN Wikipedia_Research_Specialist]: Summarise findings" == result
+
+
+def test_spawn_or_assign_no_task_returns_empty_for_existing():
+    """If initial_task is missing and agent exists, returns empty string (no directive)."""
+    o = _MockOrchestratorBase({"tag:test:analyst": "Analyst"})
+    result = o._spawn_or_assign("spawn_text_agent", {
+        "name": "Analyst",
+        "system": "You analyse",
+        "initial_task": "",
+        "provider": "openai",
+    })
+    assert result == ""

@@ -403,10 +403,14 @@ class FloorManager:
             )
 
     def _resolve_agent_uri_by_name(self, name: str) -> Optional[str]:
-        """Look up a speakerUri by conversational name (case-insensitive)."""
-        name_lower = name.lower()
+        """Look up a speakerUri by conversational name.
+
+        Matching is case-insensitive and treats underscores as spaces so that
+        ``Wikipedia_Research_Specialist`` finds ``Wikipedia Research Specialist``.
+        """
+        normalized = name.lower().replace("_", " ")
         for uri, agent_name in self._agents.items():
-            if agent_name.lower() == name_lower:
+            if agent_name.lower().replace("_", " ") == normalized:
                 return uri
         return None
 
