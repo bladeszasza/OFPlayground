@@ -321,19 +321,31 @@ ofp-playground start --policy round_robin --agent ...
 
 ## CLI Reference
 
+### Global options (before the subcommand)
+
+```
+ofp-playground [OPTIONS] COMMAND
+
+  -v, --verbose    Enable debug logging (full OFP envelope traces)
+```
+
+**Debug example:**
+```bash
+ofp-playground -v start --policy round_robin --remote polly
+```
+
 ### `ofp-playground start`
 
 ```
 Options:
-  -p, --policy TEXT          Floor policy (default: sequential)
-  -a, --agent TYPE:NAME...   Pre-spawn an agent (repeatable)
-  -r, --remote URL           Connect to a remote OFP agent (repeatable)
-  --no-human                 Run without human input (autonomous mode)
-  -t, --topic TEXT           Seed topic to start the conversation
-  -n, --max-turns INT        Stop automatically after N utterances
-  --human-name TEXT          Display name for the human (default: User)
-  --show-floor-events        Show floor grant/request events
-  -v, --verbose              Enable debug logging
+  -p, --policy TEXT              Floor policy (default: sequential)
+  -a, --agent TYPE:NAME...       Pre-spawn an agent (repeatable)
+  -r, --remote URL_OR_NAME       Remote OFP agent by slug or URL (repeatable)
+  --no-human                     Run without human input (autonomous mode)
+  -t, --topic TEXT               Seed topic to start the conversation
+  -n, --max-turns INT            Stop automatically after N utterances
+  --human-name TEXT              Display name for the human (default: User)
+  --show-floor-events            Show floor grant/request events
 ```
 
 ### `ofp-playground web`
@@ -368,7 +380,8 @@ Validate an OFP envelope JSON file.
 | `/agents` | List active agents and floor holder |
 | `/floor` | Show current floor holder and queue |
 | `/history [N]` | Show last N utterances (default 10) |
-| `/spawn <type> <name> [desc] [model]` | Add a new agent mid-conversation |
+| `/spawn <type> <name> [desc] [model]` | Add a new LLM agent mid-conversation |
+| `/spawn remote <slug-or-url>` | Connect a remote OFP agent mid-conversation |
 | `/kick <name>` | Remove an agent from the conversation |
 | `/quit` | End the session |
 

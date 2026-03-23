@@ -2,7 +2,7 @@
 # Cosmos Floor — multi-agent deep-dive on a cosmology topic.
 #
 # Agents:
-#   Narrator   — Anthropic Claude (text)  — frames the question and synthesizes findings
+#   Narrator   — HuggingFace (text)        — frames the question and synthesizes findings
 #   Stella     — Remote OFP (NASA images) — retrieves real astronomical imagery
 #   ArXiv      — Remote OFP (arXiv)       — surfaces the latest research papers
 #   Wikipedia  — Remote OFP (Wikipedia)   — provides authoritative background context
@@ -11,7 +11,8 @@
 # Policy: sequential — each agent contributes one turn before the next takes the floor.
 # No human needed — fully autonomous.
 #
-# Requirements: ANTHROPIC_API_KEY must be set (or in .env)
+# Requirements: HF_API_KEY must be set (or in .env)
+# Swap --agent line to anthropic:Narrator if you want Claude instead of HF.
 #
 # Usage:
 #   chmod +x examples/cosmos_floor.sh
@@ -24,7 +25,7 @@ ofp-playground start \
   --no-human \
   --policy sequential \
   --max-turns 10 \
-  --agent "anthropic:Narrator:You are a science communicator specializing in astrophysics and cosmology. Your role is to frame the central question clearly, interpret findings from the other agents, and synthesize everything into a coherent narrative accessible to an educated general audience. Highlight tensions with current models." \
+  --agent "hf:Narrator:You are a science communicator specializing in astrophysics and cosmology. Your role is to frame the central question clearly, interpret findings from the other agents, and synthesize everything into a coherent narrative accessible to an educated general audience. Highlight tensions with current models." \
   --remote stella \
   --remote arxiv \
   --remote wikipedia \
