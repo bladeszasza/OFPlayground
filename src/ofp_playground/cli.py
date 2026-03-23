@@ -163,7 +163,11 @@ async def _connect_remote_agent(
     )
     floor.register_agent(remote.speaker_uri, remote.name)
     registry.register(remote)
+    # Pre-register queue so the invite (sent below) is delivered before run() starts.
+    await bus.register(remote.speaker_uri, remote.queue)
     renderer.show_system_event(f"Connected {display_name} → {url}")
+    # Send OFP invite — triggers manifest exchange and floor request inside the agent.
+    await floor.invite_agent(remote.speaker_uri, url)
     asyncio.create_task(remote.run())
 
 
