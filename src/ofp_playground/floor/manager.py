@@ -89,6 +89,7 @@ class FloorManager:
         self._orchestrator_uri: Optional[str] = None
         self._assigned_uri: Optional[str] = None  # currently assigned agent in showrunner_driven mode
         self._spawn_callback: Optional[callable] = None  # set externally after creation
+        self._breakout_callback: Optional[callable] = None  # set externally for breakout sessions
         self._manuscript: list[str] = []  # accumulated accepted chunks (showrunner_driven)
         self._last_worker_text: str = ""  # most recent non-orchestrator utterance text
         self._last_worker_name: str = ""  # speaker name for the above
@@ -435,15 +436,39 @@ class FloorManager:
             [REJECT AgentName]: reason
             [KICK AgentName]
             [SPAWN -provider hf -name X -system Y -model Z]
+            [BREAKOUT policy=<p> max_rounds=<n> topic=<t>]
+            [BREAKOUT_AGENT -provider <p> -name <n> -system <s> [-model <m>]]
             [TASK_COMPLETE]
         """
         import re
 
         assigned_in_batch = False  # guard: only one [ASSIGN] per directive batch
+        breakout_header: Optional[dict] = None  # parsed from [BREAKOUT ...]
+        breakout_agent_specs: list[str] = []    # raw specs from [BREAKOUT_AGENT ...]
 
         for line in text.splitlines():
             line = line.strip()
             if not line:
+                continue
+
+            # [BREAKOUT policy=<p> max_rounds=<n> topic=<t>]
+            m = re.match(r"\[BREAKOUT\s+(.+?)\]", line, re.IGNORECASE)
+            if m and not re.match(r"\[BREAKOUT_(AGENT|COMPLETE|SUMMARY)", line, re.IGNORECASE):
+                spec = m.group(1).strip()
+                policy_m = re.search(r"policy=(\S+)", spec)
+                rounds_m = re.search(r"max_rounds=(\d+)", spec)
+                topic_m = re.search(r"topic=(.+)", spec)
+                breakout_header = {
+                    "policy": policy_m.group(1) if policy_m else "round_robin",
+                    "max_rounds": int(rounds_m.group(1)) if rounds_m else 6,
+                    "topic": topic_m.group(1).strip() if topic_m else "General discussion",
+                }
+                continue
+
+            # [BREAKOUT_AGENT -provider <p> -name <n> -system <s> [-model <m>]]
+            m = re.match(r"\[BREAKOUT_AGENT\s+(.+?)\]", line, re.IGNORECASE)
+            if m:
+                breakout_agent_specs.append(m.group(1).strip())
                 continue
 
             # [ASSIGN AgentName]: task  — set assigned agent, clear stale queue, grant floor
@@ -586,6 +611,64 @@ class FloorManager:
                 self._output_manuscript()
                 self.stop()
                 return
+
+        # After processing all lines, execute breakout if one was requested
+        if breakout_header and breakout_agent_specs:
+            await self._execute_breakout(breakout_header, breakout_agent_specs)
+
+    async def _execute_breakout(self, header: dict, agent_specs: list[str]) -> None:
+        """Spawn temporary agents, run a breakout session, inject result.
+
+        After the breakout completes, the summary is injected as if a
+        worker spoke, and the floor is returned to the orchestrator.
+        """
+        topic = header["topic"]
+        policy_str = header["policy"]
+        max_rounds = min(max(header["max_rounds"], 2), 20)
+
+        try:
+            policy = FloorPolicy(policy_str)
+        except ValueError:
+            policy = FloorPolicy.ROUND_ROBIN
+            logger.warning("Invalid breakout policy '%s', defaulting to round_robin", policy_str)
+
+        # Prevent nested orchestrator breakouts
+        if policy == FloorPolicy.SHOWRUNNER_DRIVEN:
+            policy = FloorPolicy.ROUND_ROBIN
+            logger.warning("SHOWRUNNER_DRIVEN not allowed in breakout, using round_robin")
+
+        if not self._breakout_callback:
+            logger.warning("Orchestrator [BREAKOUT]: no breakout_callback registered")
+            if self._renderer:
+                self._renderer.show_system_event("[Orchestrator] Breakout failed: no callback registered")
+            return
+
+        try:
+            summary = await self._breakout_callback(topic, policy, max_rounds, agent_specs)
+        except Exception as e:
+            logger.error("Orchestrator [BREAKOUT] failed: %s", e, exc_info=True)
+            summary = f"[Breakout: {topic}] — failed: {e}"
+            if self._renderer:
+                self._renderer.show_system_event(f"[Orchestrator] Breakout failed: {e}")
+
+        # Inject summary as if a "worker" spoke — the orchestrator sees it
+        # in its next turn and can use the breakout results.
+        self._last_worker_text = summary
+        self._last_worker_name = "Breakout Session"
+        self._assigned_uri = None
+
+        # Send summary as an utterance from the floor manager so
+        # the orchestrator agent receives it in its context.
+        await self._send_directed_utterance(
+            f"[BREAKOUT RESULT]\n{summary}",
+            target_uri=self._orchestrator_uri,
+        )
+        await self.grant_to(self._orchestrator_uri)
+
+        if self._renderer:
+            self._renderer.show_system_event(
+                f"[Orchestrator] Breakout completed — summary injected"
+            )
 
     def _parse_worker_memory(self, text: str, author: str) -> str:
         """Parse [REMEMBER category]: content directives from worker text output.

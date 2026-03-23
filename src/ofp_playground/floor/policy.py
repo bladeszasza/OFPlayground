@@ -1,4 +1,9 @@
-"""Floor policies for managing who speaks when."""
+"""Floor policies for managing who speaks when.
+
+Each policy maps to a different OFP floor-control pattern.  The
+``description`` class-attribute gives a human-readable explanation that
+is used in help text, agent tool schemas, and the CLI ``agents`` command.
+"""
 from __future__ import annotations
 
 from enum import Enum
@@ -6,11 +11,89 @@ from typing import Optional
 
 
 class FloorPolicy(str, Enum):
+    """OFP floor-control policies.
+
+    Every variant carries a *description* and *use_case* that are surfaced
+    in tool definitions (so an LLM can choose the right policy for a
+    breakout session) and in the CLI ``agents`` list.
+    """
+
     SEQUENTIAL = "sequential"
     ROUND_ROBIN = "round_robin"
     MODERATED = "moderated"
     FREE_FOR_ALL = "free_for_all"
     SHOWRUNNER_DRIVEN = "showrunner_driven"
+
+    @property
+    def description(self) -> str:
+        return _POLICY_META[self]["description"]
+
+    @property
+    def use_case(self) -> str:
+        return _POLICY_META[self]["use_case"]
+
+
+_POLICY_META: dict[FloorPolicy, dict[str, str]] = {
+    FloorPolicy.SEQUENTIAL: {
+        "description": (
+            "Agents take turns in the order they joined. Each agent speaks "
+            "once per round; the next round begins after everyone has spoken. "
+            "Floor requests are queued and served FIFO."
+        ),
+        "use_case": (
+            "Structured discussions where every voice is heard in a "
+            "predictable order — e.g. panel Q&A, step-by-step reviews."
+        ),
+    },
+    FloorPolicy.ROUND_ROBIN: {
+        "description": (
+            "Strict rotation through all registered agents. After an agent "
+            "yields, the next in the ring automatically receives the floor. "
+            "No agent can speak out of turn."
+        ),
+        "use_case": (
+            "Multi-chapter storytelling, debate formats, or any workflow "
+            "where equal airtime matters — each agent contributes exactly "
+            "once per cycle."
+        ),
+    },
+    FloorPolicy.MODERATED: {
+        "description": (
+            "Agents must request the floor; a moderator (the floor manager "
+            "or a designated agent) decides who speaks next. Requests are "
+            "queued and granted one at a time."
+        ),
+        "use_case": (
+            "Expert panels, code reviews, or deliberation where a "
+            "chairperson controls who has the mic."
+        ),
+    },
+    FloorPolicy.FREE_FOR_ALL: {
+        "description": (
+            "Any agent can speak at any time without requesting permission. "
+            "Floor requests are always immediately granted. There is no "
+            "enforced turn order."
+        ),
+        "use_case": (
+            "Brainstorming, rapid-fire ideation, or casual conversations "
+            "where spontaneity is more valuable than structure."
+        ),
+    },
+    FloorPolicy.SHOWRUNNER_DRIVEN: {
+        "description": (
+            "One orchestrator agent controls the entire flow. It speaks "
+            "first, assigns tasks to workers via [ASSIGN], evaluates "
+            "output with [ACCEPT]/[REJECT], and can [SPAWN] new agents "
+            "or [KICK] existing ones. Workers only speak when assigned."
+        ),
+        "use_case": (
+            "Project management, creative production, or any pipeline "
+            "where a single director coordinates specialist workers — "
+            "e.g. writing a novella, producing a campaign, building a "
+            "research report."
+        ),
+    },
+}
 
 
 class FloorController:

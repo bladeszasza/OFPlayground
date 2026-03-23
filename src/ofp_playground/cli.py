@@ -249,6 +249,47 @@ async def _run_session(
             renderer.show_system_event(f"Orchestrator spawn failed: {e}")
 
     floor._spawn_callback = _floor_spawn_callback
+
+    async def _floor_breakout_callback(
+        topic: str,
+        policy: "FloorPolicy",
+        max_rounds: int,
+        agent_specs: list[str],
+    ) -> str:
+        """Create temporary agents and run a breakout session.
+
+        Each agent_spec is a string like:
+            -provider hf -name Alice -system You are a critic -model ...
+        """
+        from ofp_playground.floor.breakout import run_breakout_session
+
+        agents = []
+        temp_bus = MessageBus()  # placeholder — run_breakout_session creates its own bus
+
+        for spec_str in agent_specs:
+            try:
+                agent = _create_breakout_agent(spec_str, temp_bus, "breakout-temp", settings)
+                if agent:
+                    agents.append(agent)
+            except Exception as e:
+                logger.error("Breakout agent creation failed for '%s': %s", spec_str, e)
+                renderer.show_system_event(f"Breakout agent failed: {e}")
+
+        if len(agents) < 2:
+            return f"[Breakout: {topic}] — could not create enough agents ({len(agents)}/2 minimum)."
+
+        summary = await run_breakout_session(
+            topic=topic,
+            agents=agents,
+            policy=policy,
+            parent_conversation_id=floor.conversation_id,
+            max_rounds=max_rounds,
+            parent_renderer=renderer,
+        )
+        return summary
+
+    floor._breakout_callback = _floor_breakout_callback
+
     tasks = [floor.run()]
 
     if not no_human:
@@ -390,6 +431,70 @@ async def _run_session(
     finally:
         floor.stop()
         renderer.show_system_event("Conversation ended. Goodbye!")
+
+
+def _create_breakout_agent(spec_str: str, bus: MessageBus, conversation_id: str, settings: Settings):
+    """Create a text-only LLM agent for a breakout session from a spec string.
+
+    Spec format: -provider <p> -name <n> -system <s> [-model <m>]
+
+    Only text-generation agents are created — no image/video/orchestrator.
+    The agent is NOT registered on any floor; the caller wires it.
+    """
+    import re
+
+    provider_m = re.search(r"-provider\s+(\S+)", spec_str)
+    name_m = re.search(r"-name\s+(\S+)", spec_str)
+    system_m = re.search(r"-system\s+(.+?)(?:\s+-model\s|\s*$)", spec_str)
+    model_m = re.search(r"-model\s+(\S+)", spec_str)
+
+    provider = provider_m.group(1) if provider_m else "hf"
+    name = name_m.group(1) if name_m else "BreakoutAgent"
+    system = system_m.group(1).strip() if system_m else f"You are {name}, an AI assistant."
+    model_ov = model_m.group(1) if model_m else None
+
+    if provider in ("anthropic", "claude"):
+        api_key = settings.get_anthropic_key()
+        if not api_key:
+            raise ValueError(f"No Anthropic API key for breakout agent {name}")
+        from ofp_playground.agents.llm.anthropic import AnthropicAgent
+        return AnthropicAgent(
+            name=name, synopsis=system, bus=bus, conversation_id=conversation_id,
+            api_key=api_key, model=model_ov or settings.defaults.llm_model_anthropic,
+        )
+
+    elif provider in ("openai", "gpt"):
+        api_key = settings.get_openai_key()
+        if not api_key:
+            raise ValueError(f"No OpenAI API key for breakout agent {name}")
+        from ofp_playground.agents.llm.openai import OpenAIAgent
+        return OpenAIAgent(
+            name=name, synopsis=system, bus=bus, conversation_id=conversation_id,
+            api_key=api_key, model=model_ov or settings.defaults.llm_model_openai,
+        )
+
+    elif provider in ("google", "gemini"):
+        api_key = settings.get_google_key()
+        if not api_key:
+            raise ValueError(f"No Google API key for breakout agent {name}")
+        from ofp_playground.agents.llm.google import GoogleAgent
+        return GoogleAgent(
+            name=name, synopsis=system, bus=bus, conversation_id=conversation_id,
+            api_key=api_key, model=model_ov or settings.defaults.llm_model_google,
+        )
+
+    elif provider in ("hf", "huggingface"):
+        api_key = settings.get_huggingface_key()
+        if not api_key:
+            raise ValueError(f"No HuggingFace API key for breakout agent {name}")
+        from ofp_playground.agents.llm.huggingface import HuggingFaceAgent
+        return HuggingFaceAgent(
+            name=name, synopsis=system, bus=bus, conversation_id=conversation_id,
+            api_key=api_key, model=model_ov or settings.defaults.llm_model_huggingface,
+        )
+
+    else:
+        raise ValueError(f"Unknown provider '{provider}' for breakout agent {name}")
 
 
 async def _spawn_llm_agent(

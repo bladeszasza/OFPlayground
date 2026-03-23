@@ -222,6 +222,14 @@ MEMORY TOOLS: Use store_memory and recall_memory to track session knowledge.
 - The full memory summary is auto-injected below each turn — you rarely need recall_memory explicitly.
 - Workers can write memories using [REMEMBER category]: content in their output text.
 
+BREAKOUT SESSIONS: Use create_breakout_session to spin up a temporary sub-floor.
+- A breakout is a short, focused discussion between 2+ freshly-spawned agents under their own floor policy.
+- Use breakouts for: focused deliberation, brainstorming, peer review, or side-discussions.
+- The breakout runs independently; when it completes a summary is returned to you.
+- Breakouts CANNOT nest — they run one level deep only. Each breakout gets its own agents.
+- Choose the right policy for the breakout (sequential, round_robin, moderated, free_for_all).
+- Do NOT call create_breakout_session and [ASSIGN] in the same turn — wait for the breakout summary first.
+
 For all other control, respond ONLY with structured directives — one per line, no preamble, no commentary:
 
     [ASSIGN AgentName]: <concrete task, max 25 words>
@@ -395,6 +403,7 @@ class OrchestratorAgent(_OrchestratorBase, HuggingFaceAgent):
         loop = asyncio.get_event_loop()
         from ofp_playground.agents.llm.spawn_tools import build_spawn_tools, to_hf_tools, tool_use_to_directives
         from ofp_playground.memory.tools import build_memory_tools, execute_memory_tool
+        from ofp_playground.floor.breakout_tools import build_breakout_tools, tool_use_to_breakout_directive
 
         system = self._build_system_prompt([])
         messages = [{"role": "system", "content": system}] + list(self._conversation_history[-20:])
@@ -410,7 +419,8 @@ class OrchestratorAgent(_OrchestratorBase, HuggingFaceAgent):
         spawn_tools = build_spawn_tools(self._settings) if self._settings else []
         memory_store = getattr(self, "_memory_store", None)
         mem_tools = build_memory_tools() if memory_store else []
-        all_tools = spawn_tools + mem_tools
+        breakout_tools = build_breakout_tools(self._settings) if self._settings else []
+        all_tools = spawn_tools + mem_tools + breakout_tools
         hf_tools = to_hf_tools(all_tools) if all_tools else None
 
         def _call(msgs):
@@ -442,6 +452,10 @@ class OrchestratorAgent(_OrchestratorBase, HuggingFaceAgent):
                     if name == "recall_memory":
                         recall_results.append((tc, result))
                     # store_memory: fire-and-forget, result logged but not fed back
+                elif name == "create_breakout_session":
+                    directive = tool_use_to_breakout_directive(args)
+                    if directive:
+                        spawn_directives.append(directive)
                 else:
                     directive = tool_use_to_directives(name, args)
                     if directive:
@@ -523,6 +537,7 @@ class AnthropicOrchestratorAgent(_OrchestratorBase, AnthropicAgent):
         loop = asyncio.get_event_loop()
         from ofp_playground.agents.llm.spawn_tools import build_spawn_tools, tool_use_to_directives
         from ofp_playground.memory.tools import build_memory_tools, execute_memory_tool
+        from ofp_playground.floor.breakout_tools import build_breakout_tools, tool_use_to_breakout_directive
 
         client = self._get_client()
         system = self._build_system_prompt([])
@@ -533,7 +548,8 @@ class AnthropicOrchestratorAgent(_OrchestratorBase, AnthropicAgent):
         spawn_tools = build_spawn_tools(self._settings) if self._settings else []
         memory_store = getattr(self, "_memory_store", None)
         mem_tools = build_memory_tools() if memory_store else []
-        all_tools = spawn_tools + mem_tools
+        breakout_tools = build_breakout_tools(self._settings) if self._settings else []
+        all_tools = spawn_tools + mem_tools + breakout_tools
 
         kwargs: dict = {
             "model": self._model,
@@ -562,6 +578,10 @@ class AnthropicOrchestratorAgent(_OrchestratorBase, AnthropicAgent):
                     result = execute_memory_tool(block.name, block.input, memory_store, self._name)
                     if block.name == "recall_memory":
                         recall_blocks.append((block, result))
+                elif block.name == "create_breakout_session":
+                    directive = tool_use_to_breakout_directive(block.input)
+                    if directive:
+                        spawn_directives.append(directive)
                 else:
                     directive = tool_use_to_directives(block.name, block.input)
                     if directive:
@@ -630,6 +650,7 @@ class OpenAIOrchestratorAgent(_OrchestratorBase, OpenAIAgent):
         loop = asyncio.get_event_loop()
         from ofp_playground.agents.llm.spawn_tools import build_spawn_tools, to_openai_tools, tool_use_to_directives
         from ofp_playground.memory.tools import build_memory_tools, execute_memory_tool
+        from ofp_playground.floor.breakout_tools import build_breakout_tools, tool_use_to_breakout_directive
 
         client = self._get_client()
         system = self._build_system_prompt([])
@@ -640,7 +661,8 @@ class OpenAIOrchestratorAgent(_OrchestratorBase, OpenAIAgent):
         spawn_tools = build_spawn_tools(self._settings) if self._settings else []
         memory_store = getattr(self, "_memory_store", None)
         mem_tools = build_memory_tools() if memory_store else []
-        all_tools = spawn_tools + mem_tools
+        breakout_tools = build_breakout_tools(self._settings) if self._settings else []
+        all_tools = spawn_tools + mem_tools + breakout_tools
         openai_tools = to_openai_tools(all_tools) if all_tools else None
 
         def _call(inp):
@@ -668,6 +690,10 @@ class OpenAIOrchestratorAgent(_OrchestratorBase, OpenAIAgent):
                     result = execute_memory_tool(item.name, args, memory_store, self._name)
                     if item.name == "recall_memory":
                         recall_items.append((item, result))
+                elif item.name == "create_breakout_session":
+                    directive = tool_use_to_breakout_directive(args)
+                    if directive:
+                        spawn_directives.append(directive)
                 else:
                     directive = tool_use_to_directives(item.name, args)
                     if directive:
@@ -744,6 +770,7 @@ class GoogleOrchestratorAgent(_OrchestratorBase, GoogleAgent):
         from google.genai import types
         from ofp_playground.agents.llm.spawn_tools import build_spawn_tools, to_google_tools, tool_use_to_directives
         from ofp_playground.memory.tools import build_memory_tools, execute_memory_tool
+        from ofp_playground.floor.breakout_tools import build_breakout_tools, tool_use_to_breakout_directive
 
         system = self._build_system_prompt([])
         history = list(self._conversation_history[-20:])
@@ -761,7 +788,8 @@ class GoogleOrchestratorAgent(_OrchestratorBase, GoogleAgent):
         spawn_tools = build_spawn_tools(self._settings) if self._settings else []
         memory_store = getattr(self, "_memory_store", None)
         mem_tools = build_memory_tools() if memory_store else []
-        all_tools = spawn_tools + mem_tools
+        breakout_tools = build_breakout_tools(self._settings) if self._settings else []
+        all_tools = spawn_tools + mem_tools + breakout_tools
         google_tools = to_google_tools(all_tools) if all_tools else None
 
         def _call(cts):
@@ -797,6 +825,10 @@ class GoogleOrchestratorAgent(_OrchestratorBase, GoogleAgent):
                         result = execute_memory_tool(fc.name, args, memory_store, self._name)
                         if fc.name == "recall_memory":
                             recall_results.append((fc.name, result))
+                    elif fc.name == "create_breakout_session":
+                        directive = tool_use_to_breakout_directive(args)
+                        if directive:
+                            spawn_directives.append(directive)
                     else:
                         directive = tool_use_to_directives(fc.name, args)
                         if directive:
