@@ -30,7 +30,17 @@
       "Bash(python3:*)",
       "Bash(.venv/bin/python -c \"\nfrom src.ofp_playground.agents.base import BasePlaygroundAgent\nfrom src.ofp_playground.agents.llm.base import BaseLLMAgent\nfrom src.ofp_playground.agents.llm.image import ImageAgent\nfrom src.ofp_playground.agents.llm.video import VideoAgent\nfrom src.ofp_playground.floor.manager import FloorManager\nprint\\('All imports OK'\\)\n\" 2>&1)",
       "Bash(pip3 show:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "WebFetch(domain:developers.openai.com)",
+      "Bash(ofp-playground agents:*)",
+      "Bash(git rm:*)",
+      "Bash(find /Users/bolyos/Development/ofpPlaygorund -path */tests* -o -path */test_*)",
+      "Bash(find /Users/bolyos/Development/ofpPlaygorund -name Makefile -o -name *.sh -not -path ./.venv/* -not -path ./.git/*)",
+      "Bash(grep -v \"^\\\\.$\")",
+      "Bash(grep -v \"^\\\\.\\\\.$\")",
+      "Bash(head -20 grep -n \"default.*model\\\\|MODEL\\\\|flux\\\\|FLUX\" /Users/bolyos/Development/ofpPlaygorund/src/ofp_playground/agents/llm/image.py)",
+      "Bash(head -20 grep -n \"gpt-4.5\\\\|nano\\\\|o4-mini\" /Users/bolyos/Development/ofpPlaygorund/src/ofp_playground/agents/llm/openai.py)",
+      "Bash(head -10 grep -n \"gpt-5.4\\\\|gpt-4.5\\\\|nano\" /Users/bolyos/Development/ofpPlaygorund/src/ofp_playground/agents/llm/openai.py)"
     ]
   }
 }
