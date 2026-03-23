@@ -156,8 +156,8 @@ class HumanAgent(BasePlaygroundAgent):
             envelope = self._make_utterance_envelope(text)
             await self.send_envelope(envelope)
 
-            # In sequential mode, yield after speaking
-            if self._floor_policy == "sequential" and self._has_floor:
+            # In sequential and round_robin mode, yield after speaking
+            if self._floor_policy in ("sequential", "round_robin") and self._has_floor:
                 self._has_floor = False
                 await self.yield_floor()
 

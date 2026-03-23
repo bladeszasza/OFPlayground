@@ -616,6 +616,11 @@ class FloorManager:
             if sender_uri not in (self._orchestrator_uri, self._assigned_uri):
                 return
 
+        # If the agent already holds the floor (e.g. got it via round-robin just before
+        # its queued request arrived), skip — avoids double-grant loops.
+        if self._policy.current_holder == sender_uri:
+            return
+
         reason = getattr(event, "reason", "") or ""
         granted = self._policy.request_floor(sender_uri, reason)
 

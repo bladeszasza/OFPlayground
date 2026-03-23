@@ -161,7 +161,11 @@ class RemoteOFPAgent(BasePlaygroundAgent):
             logger.warning("[%s] Could not fetch manifest from remote: %s", self._name, e)
 
     async def _handle_invite(self) -> None:
-        """OFP invite: acknowledge, fetch remote manifest, then request the floor."""
+        """OFP invite: acknowledge and fetch remote manifest.
+
+        Floor is NOT requested here — the remote agent only speaks when it has
+        an utterance to forward, so request_floor is deferred to _handle_utterance.
+        """
         from openfloor import Conversation, Event, Sender, To
         accept_env = Envelope(
             sender=Sender(speakerUri=self.speaker_uri, serviceUrl=self._remote_url),
@@ -174,7 +178,6 @@ class RemoteOFPAgent(BasePlaygroundAgent):
         )
         await self.send_envelope(accept_env)
         await self._fetch_and_publish_manifest()
-        await self.request_floor("Ready to participate")
 
     async def _post_to_remote(self, text: str, sender_uri: str) -> Optional[str]:
         """POST an utterance to the remote OFP endpoint, return response text."""
