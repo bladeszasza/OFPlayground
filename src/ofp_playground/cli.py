@@ -318,7 +318,7 @@ async def _run_session(
         )
 
         # Save full session as MD artifact
-        artifact_path = save_breakout_artifact(result, Path("ofp-breakout"))
+        artifact_path = save_breakout_artifact(result, floor.output.breakout)
         renderer.show_system_event(f"[Breakout] Artifact: {artifact_path}")
 
         # Register in MemoryStore so it appears in agent system prompts
@@ -614,7 +614,7 @@ async def _spawn_llm_agent(
                 name=name, synopsis=description, bus=bus,
                 conversation_id=floor.conversation_id,
                 api_key=api_key, provider="anthropic",
-                model=model_override or settings.defaults.llm_model_anthropic,
+                model=model_override or None,
             )
         else:
             renderer.show_system_event(
@@ -679,7 +679,7 @@ async def _spawn_llm_agent(
                 name=name, synopsis=description, bus=bus,
                 conversation_id=floor.conversation_id,
                 api_key=api_key, provider="openai",
-                model=model_override or settings.defaults.llm_model_openai,
+                model=model_override or None,
             )
         else:
             renderer.show_system_event(
@@ -754,7 +754,7 @@ async def _spawn_llm_agent(
                 name=name, synopsis=description, bus=bus,
                 conversation_id=floor.conversation_id,
                 api_key=api_key, provider="google",
-                model=model_override or settings.defaults.llm_model_google,
+                model=model_override or None,
             )
         else:
             renderer.show_system_event(
@@ -920,7 +920,7 @@ async def _spawn_llm_agent(
                 name=name, synopsis=description, bus=bus,
                 conversation_id=floor.conversation_id,
                 api_key=api_key, provider="hf",
-                model=model_override or settings.defaults.llm_model_huggingface,
+                model=model_override or None,
             )
         else:
             # Default: text-generation (and any other text-in/text-out tasks)
@@ -971,6 +971,21 @@ async def _spawn_llm_agent(
             agent._max_retries = max_retries_override
         if max_tokens_override and hasattr(agent, "_max_tokens"):
             agent._max_tokens = max_tokens_override
+        # Wire per-session output directories into media / web agents
+        if hasattr(agent, "_output_dir"):
+            out = floor.output
+            task = agent_type.split(":", 1)[1] if ":" in agent_type else ""
+            if task in ("text-to-image",) or "image" in agent_type:
+                agent._output_dir = out.images
+            elif task in ("text-to-video",):
+                agent._output_dir = out.videos
+            elif task in ("text-to-music",):
+                agent._output_dir = out.music
+            elif task in ("web-page", "web-page-generation", "web-showcase"):
+                agent._output_dir = out.web
+            else:
+                agent._output_dir = out.root
+            agent._output_dir.mkdir(parents=True, exist_ok=True)
         # Give every LLM agent access to the live URI→name registry
         if hasattr(agent, "set_name_registry"):
             agent.set_name_registry(floor._agents)

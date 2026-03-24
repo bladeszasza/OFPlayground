@@ -45,7 +45,8 @@ class VideoAgent(BasePlaygroundAgent):
         self._api_key = api_key
         self._has_floor = False
         self._last_text: Optional[str] = None
-        OUTPUT_DIR.mkdir(exist_ok=True)
+        self._output_dir: Path = OUTPUT_DIR
+        self._output_dir.mkdir(parents=True, exist_ok=True)
 
     def _build_manifest(self) -> Manifest:
         return Manifest(
@@ -85,7 +86,7 @@ class VideoAgent(BasePlaygroundAgent):
         try:
             video_bytes = await self._call_with_retry(_coro)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            path = OUTPUT_DIR / f"{ts}_{self._name.lower()}.mp4"
+            path = self._output_dir / f"{ts}_{self._name.lower()}.mp4"
             path.write_bytes(video_bytes)
             return path
         except Exception as e:

@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = Path("ofp-web")
 DEFAULT_MODEL_ANTHROPIC = "claude-sonnet-4-6"
-DEFAULT_MODEL_OPENAI = "gpt-5.4-2026-03-05"
+DEFAULT_MODEL_OPENAI = "gpt-5.4-long-context"
 DEFAULT_MODEL_GOOGLE = "gemini-3.1-pro-preview"
 DEFAULT_MODEL_HF = "deepseek-ai/DeepSeek-V3.2"
 
@@ -59,7 +59,8 @@ class WebPageAgent(BaseLLMAgent):
         self._collected_video: list[tuple[str, Path]] = []
         self._floor_log: list[str] = []
         self._page_directive: str = ""  # full directive text incl. FloorManager-injected manuscript
-        OUTPUT_DIR.mkdir(exist_ok=True)
+        self._output_dir: Path = OUTPUT_DIR
+        self._output_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def task_type(self) -> str:
@@ -262,13 +263,13 @@ class WebPageAgent(BaseLLMAgent):
                 html = self._strip_markdown_fences(html)
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 slug = re.sub(r"[^\w]+", "_", self._name.lower())
-                path = OUTPUT_DIR / f"{ts}_{slug}.html"
+                path = self._output_dir / f"{ts}_{slug}.html"
                 path.write_text(html, encoding="utf-8")
 
                 # Copy audio/video files alongside the HTML so relative refs work
                 import shutil
                 for _, src in self._collected_audio + self._collected_video:
-                    dest = OUTPUT_DIR / src.name
+                    dest = self._output_dir / src.name
                     if not dest.exists():
                         shutil.copy2(src, dest)
 

@@ -28,6 +28,7 @@ from openfloor import (
 )
 
 from ofp_playground.bus.message_bus import MessageBus, FLOOR_MANAGER_URI
+from ofp_playground.config.output import SessionOutputManager
 from ofp_playground.floor.history import ConversationHistory
 from ofp_playground.floor.policy import FloorController, FloorPolicy
 from ofp_playground.memory.store import MemoryStore
@@ -75,6 +76,7 @@ class FloorManager:
         self._bus = bus
         self._manifest = make_floor_manager_manifest()
         self._conversation_id = f"conv:{uuid.uuid4()}"
+        self._output = SessionOutputManager(self._conversation_id)
         self._policy = FloorController(policy)
         self._history = ConversationHistory()
         self._renderer = renderer
@@ -109,6 +111,10 @@ class FloorManager:
     @property
     def conversation_id(self) -> str:
         return self._conversation_id
+
+    @property
+    def output(self) -> SessionOutputManager:
+        return self._output
 
     @property
     def history(self) -> ConversationHistory:
@@ -723,21 +729,16 @@ class FloorManager:
         return parse_remember_directives(text, self._memory_store, author)
 
     def _output_manuscript(self) -> None:
-        """Print the assembled manuscript and save it to a file.
+        """Print the assembled manuscript and save it to the session output directory.
 
         Also writes a companion memory dump (JSON) when the memory store is non-empty.
         """
         if not self._manuscript:
             return
         import json
-        import os
-        from datetime import datetime
 
         text = "\n\n".join(self._manuscript)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        conv_short = self._conversation_id.split(":")[-1][:8]
-        filename = f"manuscript_{ts}_{conv_short}.txt"
-        filepath = os.path.join(os.getcwd(), filename)
+        filepath = str(self._output.root / "manuscript.txt")
         try:
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(text)
@@ -747,8 +748,7 @@ class FloorManager:
 
         # Companion memory dump
         if not self._memory_store.is_empty():
-            mem_filename = f"memory_{ts}_{conv_short}.json"
-            mem_filepath = os.path.join(os.getcwd(), mem_filename)
+            mem_filepath = str(self._output.root / "memory.json")
             try:
                 with open(mem_filepath, "w", encoding="utf-8") as f:
                     json.dump(self._memory_store.to_dict(), f, indent=2)

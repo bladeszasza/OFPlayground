@@ -63,7 +63,7 @@ class BaseLLMAgent(BasePlaygroundAgent):
         self._model = model
         self._relevance_filter = relevance_filter
         self._api_key = api_key
-        self._max_tokens: int = 8000
+        self._max_tokens: int = 12000
         self._has_floor = False
         self._pending_context: list[dict] = []  # buffered messages since last turn
         self._consecutive_errors: int = 0

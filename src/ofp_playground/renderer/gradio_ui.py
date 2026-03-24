@@ -221,13 +221,14 @@ def launch_web_session(
         timer = gr.Timer(2.0)
         timer.tick(poll_history, inputs=[chatbot], outputs=[chatbot])
 
-    images_dir = Path("ofp-images").resolve()
-    images_dir.mkdir(exist_ok=True)
+    images_dir = Path(str(getattr(floor, '_output', None) and floor._output.images or "ofp-images")).resolve()
+    images_dir.mkdir(parents=True, exist_ok=True)
+    result_dir = Path(str(getattr(floor, '_output', None) and floor._output.root or images_dir)).resolve()
     demo.launch(
         server_name=host,
         server_port=port,
         share=share,
         prevent_thread_lock=True,
-        allowed_paths=[str(images_dir)],
+        allowed_paths=[str(images_dir), str(result_dir)],
     )
     logger.info("Gradio UI launched at http://%s:%d", host, port)

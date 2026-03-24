@@ -7,8 +7,7 @@
 #   ├── Director      — Anthropic Claude   — orchestrator: drives the 8-step pipeline
 #   ├── Writer        — OpenAI GPT         — lead writer: synthesizes room output into final script
 #   ├── Painter       — HuggingFace FLUX   — storyboard image generation (3 shots)
-#   ├── Composer      — Google Lyria       — comedic music cue generation
-#   └── WebShowcase   — Anthropic Claude   — post-production HTML showcase generator
+#   └── Composer      — Google Lyria       — comedic music cue generation
 #
 #   WRITERS ROOM BREAKOUT (round_robin, 12 rounds)  ← spun up by Director in Step 1
 #   ├── PlotWriter     — Anthropic — scene structure, beats, cold open / tag
@@ -44,7 +43,7 @@ YOUR PERMANENT TEAM on this floor:
 - Writer: lead writer — synthesizes the Writers Room output into the final polished script
 - Painter: generates storyboard shots as images
 - Composer: creates the comedic music cue
-- WebShowcase: post-production — assembles everything into a self-contained HTML page
+- WebShowcase: post-production 
 
 YOUR STRICT 8-STEP PIPELINE — one action per turn, in this exact order:
 
@@ -52,7 +51,7 @@ STEP 1 — WRITERS ROOM (your VERY FIRST action — call the tool, do not write 
   Call create_breakout_session with these exact parameters:
     topic: copy the full scene brief verbatim from the conversation
     policy: round_robin
-    max_rounds: 12
+    max_rounds: 23
     agents:
       - name: PlotWriter
         provider: anthropic
@@ -67,7 +66,7 @@ STEP 1 — WRITERS ROOM (your VERY FIRST action — call the tool, do not write 
  Fill in dialogue for the beats PlotWriter outlined. On later turns sharpen punchlines and add callbacks.\
  Write only script content — no meta-commentary.\"
       - name: GagWriter
-        provider: google
+        provider: anthropic
         system: \"You are GagWriter, a comedy TV writer specializing in visual comedy and cutaway gags.\
  Insert at least 2 CUTAWAY GAG blocks (format: CUTAWAY: [description] / BACK TO SCENE) and at least\
  3 Star Wars misunderstandings woven into the dialogue. Add visual stage directions and one MUSIC NOTE line.\
@@ -94,7 +93,7 @@ STEP 6 — After Painter delivers Shot 3:
 
 STEP 7 — After Composer delivers:
   [ACCEPT], then [ASSIGN WebShowcase]: Generate a self-contained HTML showcase page for this production run.
-  Include the full manuscript, all 3 storyboard images (embed as base64), the audio player, the pipeline
+  Include the full manuscript, all 3 storyboard images, the audio player, the pipeline
   architecture (8 steps), execution timeline, and an honest quality analysis of the run.
   Output a single .html file saved to ofp-showcase/.
 
@@ -150,9 +149,9 @@ Your sole job: take the raw artifacts of a completed multi-agent run and produce
 INPUTS YOU WILL RECEIVE in the assignment directive:
 - DIRECTOR ASSIGNMENT — the task description and pipeline context
 - MANUSCRIPT — the full accepted deliverables (script, images refs, music ref) under '--- STORY SO FAR ---'
-- IMAGES — base64-encoded PNG artifacts provided in the context (embed directly as data URIs)
+- IMAGES — image filename reference (sibling file alongside the HTML)
 - AUDIO — audio filename reference (sibling file alongside the HTML)
-- FLOOR LOG — timestamped event log of the run
+
 
 OUTPUT FORMAT: Return ONLY a complete HTML document (<!DOCTYPE html> through </html>).
 No markdown, no explanation, no preamble. Just the HTML.
@@ -180,10 +179,10 @@ ofp-playground start \
   --no-human \
   --policy showrunner_driven \
   --max-turns 160 \
-  --agent "anthropic:orchestrator:Director:${DIRECTOR_MISSION}" \
+  --agent "anthropic:orchestrator:Director:${DIRECTOR_MISSION}:claude-sonnet-4-6" \
   --agent "openai:Writer:${WRITER_PROMPT}" \
   --agent "hf:text-to-image:Painter:${PAINTER_PROMPT}" \
   --agent "google:text-to-music:Composer:${COMPOSER_PROMPT}" \
-  --agent "anthropic:web-page-generation:WebShowcase:${SHOWCASE_PROMPT}" \
+  --agent "openai:web-page-generation:WebShowcase:${SHOWCASE_PROMPT}" \
   --show-floor-events \
   --topic "$TOPIC"

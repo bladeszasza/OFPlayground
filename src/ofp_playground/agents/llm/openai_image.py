@@ -53,7 +53,8 @@ class OpenAIImageAgent(BasePlaygroundAgent):
         self._has_floor = False
         self._last_text: Optional[str] = None
         self._raw_prompt: Optional[str] = None
-        OUTPUT_DIR.mkdir(exist_ok=True)
+        self._output_dir: Path = OUTPUT_DIR
+        self._output_dir.mkdir(parents=True, exist_ok=True)
 
     def _build_manifest(self) -> Manifest:
         return Manifest(
@@ -127,7 +128,7 @@ class OpenAIImageAgent(BasePlaygroundAgent):
         try:
             image_bytes = await self._call_with_retry(_coro)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            path = OUTPUT_DIR / f"{ts}_{self._name.lower()}.png"
+            path = self._output_dir / f"{ts}_{self._name.lower()}.png"
             path.write_bytes(image_bytes)
             return path
         except Exception as e:

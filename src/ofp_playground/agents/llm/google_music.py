@@ -53,7 +53,8 @@ class GeminiMusicAgent(BasePlaygroundAgent):
         self._has_floor = False
         self._last_text: Optional[str] = None
         self._raw_prompt: Optional[str] = None  # directive task from orchestrator
-        OUTPUT_MUSIC_DIR.mkdir(exist_ok=True)
+        self._output_dir: Path = OUTPUT_MUSIC_DIR
+        self._output_dir.mkdir(parents=True, exist_ok=True)
 
     def _build_manifest(self) -> Manifest:
         return Manifest(
@@ -161,7 +162,7 @@ class GeminiMusicAgent(BasePlaygroundAgent):
 
         pcm_data = b"".join(audio_chunks)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = OUTPUT_MUSIC_DIR / f"{ts}_{self._name.lower()}.wav"
+        path = self._output_dir / f"{ts}_{self._name.lower()}.wav"
         with wave.open(str(path), "wb") as wf:
             wf.setnchannels(CHANNELS)
             wf.setsampwidth(BYTES_PER_SAMPLE)
