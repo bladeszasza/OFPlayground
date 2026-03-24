@@ -184,6 +184,6 @@ ofp-playground start \
   --agent "openai:Writer:${WRITER_PROMPT}" \
   --agent "hf:text-to-image:Painter:${PAINTER_PROMPT}" \
   --agent "google:text-to-music:Composer:${COMPOSER_PROMPT}" \
-  --agent "anthropic:web-showcase:WebShowcase:${SHOWCASE_PROMPT}" \
+  --agent "anthropic:web-page-generation:WebShowcase:${SHOWCASE_PROMPT}" \
   --show-floor-events \
   --topic "$TOPIC"
