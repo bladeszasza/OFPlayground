@@ -137,17 +137,13 @@ class WebPageAgent(BaseLLMAgent):
         if self._page_directive:
             parts.append(f"## TASK DIRECTIVE & CONTEXT\n{self._page_directive}\n")
 
-        # Images — embed as base64
+        # Images — reference by filename only; base64 is inlined by Python after generation
         for i, (desc, path) in enumerate(self._collected_images):
-            try:
-                b64 = base64.b64encode(path.read_bytes()).decode()
-                parts.append(
-                    f"## IMAGE {i + 1}: {desc}\n"
-                    f"Filename: {path.name}\n"
-                    f"Embed as: <img src=\"data:image/png;base64,{b64}\">\n"
-                )
-            except OSError:
-                parts.append(f"## IMAGE {i + 1}: {desc}\nFilename: {path.name} (unreadable)\n")
+            parts.append(
+                f"## IMAGE {i + 1}: {desc}\n"
+                f"Filename: {path.name}\n"
+                f"Reference as: <img src=\"{path.name}\" alt=\"{desc}\">\n"
+            )
 
         # Audio — sibling file reference
         for i, (desc, path) in enumerate(self._collected_audio):
@@ -165,10 +161,10 @@ class WebPageAgent(BaseLLMAgent):
                 f"Embed as: <video controls src=\"{path.name}\"></video>\n"
             )
 
-        # Floor log (last 80 entries)
+        # Floor log (last 15 entries — directive already has full manuscript context)
         if self._floor_log:
-            log_text = "\n".join(self._floor_log[-80:])
-            parts.append(f"## FLOOR LOG (last 80 events)\n```\n{log_text}\n```\n")
+            log_text = "\n".join(self._floor_log[-15:])
+            parts.append(f"## FLOOR LOG (last 15 events)\n```\n{log_text}\n```\n")
 
         parts.append(
             "\n=== INSTRUCTION ===\n"
@@ -185,6 +181,26 @@ class WebPageAgent(BaseLLMAgent):
         text = re.sub(r"^```html?\s*\n?", "", text)
         text = re.sub(r"\n?```\s*$", "", text)
         return text.strip()
+
+    def _postprocess_inline_images(self, html: str) -> str:
+        """Replace filename-based img src references with inline base64 data URIs.
+
+        The LLM is given filenames (e.g. <img src="chapter_01.png">) to keep the
+        prompt small.  After generation we inline the actual bytes here so the
+        final HTML file is fully self-contained.
+        """
+        for _desc, path in self._collected_images:
+            try:
+                b64 = base64.b64encode(path.read_bytes()).decode()
+                # Match both single and double-quoted src attributes
+                html = re.sub(
+                    rf'src=(["\'])({re.escape(path.name)})\1',
+                    f'src="data:image/png;base64,{b64}"',
+                    html,
+                )
+            except OSError:
+                pass  # image unreadable — leave src as filename ref
+        return html
 
     async def _generate_html(self, context: str) -> Optional[str]:
         """Dispatch HTML generation to the configured provider."""
@@ -261,6 +277,7 @@ class WebPageAgent(BaseLLMAgent):
 
             if html:
                 html = self._strip_markdown_fences(html)
+                html = self._postprocess_inline_images(html)  # inline base64 after generation
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 slug = re.sub(r"[^\w]+", "_", self._name.lower())
                 path = self._output_dir / f"{ts}_{slug}.html"
@@ -288,6 +305,7 @@ class WebPageAgent(BaseLLMAgent):
         finally:
             self._has_floor = False
             self._current_director_instruction = ""
+            self._collected_images.clear()  # reset per-chapter so images don't accumulate
             await self.yield_floor()
 
     # ------------------------------------------------------------------

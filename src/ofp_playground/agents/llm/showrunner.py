@@ -581,7 +581,7 @@ class AnthropicOrchestratorAgent(_OrchestratorBase, AnthropicAgent):
 
         kwargs: dict = {
             "model": self._model,
-            "max_tokens": 1000,
+            "max_tokens": max(self._max_tokens, 8048),
             "system": system,
             "messages": messages,
         }

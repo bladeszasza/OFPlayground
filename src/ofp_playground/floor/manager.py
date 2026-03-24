@@ -92,6 +92,7 @@ class FloorManager:
         self._assigned_uri: Optional[str] = None  # currently assigned agent in showrunner_driven mode
         self._spawn_callback: Optional[callable] = None  # set externally after creation
         self._orchestrator_idle_grants: int = 0  # consecutive floor grants with no productive action
+        self._skip_next_orchestrator_yield: bool = False  # absorb stale yieldFloor after breakout re-grant
         self._breakout_callback: Optional[callable] = None  # set externally for breakout sessions
         self._pending_breakout_file = None  # Path to last breakout artifact — injected into next ASSIGN
         self._manuscript: list[str] = []  # accumulated accepted chunks (showrunner_driven)
@@ -422,6 +423,39 @@ class FloorManager:
                 return uri
         return None
 
+    def _build_recovery_nudge(self, idle_count: int) -> str:
+        """Build a graduated recovery message for the orchestrator.
+
+        Escalates detail level with each consecutive idle grant so the LLM
+        has increasing context to determine its next action.
+        """
+        available = [n for u, n in self._agents.items() if "floor-manager" not in u]
+        word_count = sum(len(c.split()) for c in self._manuscript)
+        parts = [
+            f"[SYSTEM] You yielded without issuing an assignment. "
+            f"Manuscript progress: {len(self._manuscript)} accepted entries ({word_count} words). "
+            f"Available agents: {available}. "
+            f"Issue your next [ASSIGN AgentName]: task directive, or [TASK_COMPLETE] if done.",
+        ]
+
+        # Escalate: inject memory summary on 3rd+ idle grant
+        if idle_count >= 3 and self._memory_store and not self._memory_store.is_empty():
+            summary = self._memory_store.get_summary(max_chars=800)
+            parts.append(f"\n--- SESSION MEMORY ---\n{summary}\n---")
+
+        # Escalate: inject manuscript content on 5th+ idle grant
+        if idle_count >= 5 and self._manuscript:
+            manuscript_preview = "\n".join(
+                f"  {i+1}. {chunk[:120]}..." if len(chunk) > 120 else f"  {i+1}. {chunk}"
+                for i, chunk in enumerate(self._manuscript)
+            )
+            parts.append(
+                f"\n--- COMPLETED STEPS ({len(self._manuscript)}) ---\n"
+                f"{manuscript_preview}\n---"
+            )
+
+        return "\n".join(parts)
+
     async def _send_directed_utterance(self, text: str, target_uri: Optional[str] = None) -> None:
         """Send a directive utterance, privately if target_uri given (OFP private message)."""
         de = DialogEvent(
@@ -648,6 +682,17 @@ class FloorManager:
                     )
                 continue
 
+            # [STORE_MEMORY key]: content  — text-directive fallback for memory storage
+            m = re.match(r"\[STORE_MEMORY(?:\s+([^\]]+))?\](?:\s*:\s*(.+))?", line, re.IGNORECASE)
+            if m:
+                mem_key = (m.group(1) or "").strip()
+                mem_content = (m.group(2) or "").strip()
+                if mem_key and mem_content and self._memory_store:
+                    self._memory_store.store("decisions", mem_key, mem_content, author="orchestrator")
+                    logger.debug("Orchestrator [STORE_MEMORY]: stored '%s'", mem_key)
+                # Bare [STORE_MEMORY] without args is a no-op (LLM artifact)
+                continue
+
             # [TASK_COMPLETE]
             if re.match(r"\[TASK_COMPLETE\]", line, re.IGNORECASE):
                 if self._renderer:
@@ -712,6 +757,9 @@ class FloorManager:
             f"[BREAKOUT COMPLETE]\n{compact_text}",
             target_uri=self._orchestrator_uri,
         )
+        # The orchestrator's yieldFloor (sent before this breakout ran) is still
+        # in the queue. Mark it stale so _handle_yield_floor doesn't re-grant.
+        self._skip_next_orchestrator_yield = True
         await self.grant_to(self._orchestrator_uri)
 
         if self._renderer:
@@ -837,6 +885,18 @@ class FloorManager:
 
     async def _handle_yield_floor(self, envelope: Envelope) -> None:
         sender_uri = envelope.sender.speakerUri if envelope.sender else "unknown"
+
+        # If a breakout just re-granted the orchestrator's floor, the yieldFloor
+        # now arriving is stale (sent before the breakout ran). Consume it without
+        # triggering a second grant or recovery nudge.
+        if (
+            self._orchestrator_uri
+            and sender_uri == self._orchestrator_uri
+            and self._skip_next_orchestrator_yield
+        ):
+            self._skip_next_orchestrator_yield = False
+            return
+
         next_holder = self._policy.yield_floor(sender_uri)
         if next_holder:
             await self._grant_floor(next_holder)
@@ -862,6 +922,15 @@ class FloorManager:
                     )
                 self.stop()
                 return
+            # Inject a recovery nudge so the orchestrator receives a new user
+            # message with pipeline status — this fixes Anthropic's alternating-
+            # role requirement and gives the LLM context to issue the next step.
+            nudge = self._build_recovery_nudge(self._orchestrator_idle_grants)
+            await self._send_directed_utterance(nudge, target_uri=self._orchestrator_uri)
+            if self._renderer:
+                self._renderer.show_system_event(
+                    f"[Orchestrator] Recovery nudge #{self._orchestrator_idle_grants} sent"
+                )
             await self._grant_floor(self._orchestrator_uri)
 
     async def process_envelope(self, envelope: Envelope) -> None:

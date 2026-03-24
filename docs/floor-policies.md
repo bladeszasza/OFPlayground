@@ -39,6 +39,15 @@ yield_floor(uri):
   else → clear holder (return None)
 ```
 
+### Example
+
+```bash
+bash examples/sequential_code_review.sh "def process(u): exec(u)"
+```
+
+Three specialist reviewers (Security → Performance → Style) each speak once per human turn.
+See [examples/sequential_code_review.sh](../examples/sequential_code_review.sh).
+
 ### When to Use
 
 - Turn-based discussions where order matters
@@ -86,6 +95,15 @@ The FloorManager tracks which agents have spoken each round via `_agents_spoken_
 2. `_agents_spoken_this_round` resets
 3. Director or ShowRunner is granted the floor for next-round instructions
 
+### Example
+
+```bash
+bash examples/round_robin_novel.sh 5
+```
+
+Five-chapter neo-noir thriller: Director sets beats → 3 character-voice authors write → ShowRunner synthesises into canon.
+See [examples/round_robin_novel.sh](../examples/round_robin_novel.sh).
+
 ### When to Use
 
 - Multi-chapter collaborative stories (each agent writes a section)
@@ -128,6 +146,15 @@ revoke_floor():
   clear current holder
 ```
 
+### Example
+
+```bash
+bash examples/moderated_investment_committee.sh "NVDA — is the AI capex cycle sustainable?"
+```
+
+Four investment analysts (Macro, Fundamentals, Risk, ESG) queue their requests but only speak when you call on them.
+See [examples/moderated_investment_committee.sh](../examples/moderated_investment_committee.sh).
+
 ### When to Use
 
 - Expert panels where a moderator controls the discussion
@@ -164,6 +191,15 @@ request_floor(uri):
 yield_floor(uri):
   clear holder (return None) — no next-in-line concept
 ```
+
+### Example
+
+```bash
+bash examples/free_for_all_brainstorm.sh "An app that helps freelancers price their work confidently"
+```
+
+Four product personas (UserResearcher, PM, Designer, DevilsAdvocate) jump in whenever they have a relevant take — often 2–3 at once.
+See [examples/free_for_all_brainstorm.sh](../examples/free_for_all_brainstorm.sh).
 
 ### When to Use
 
@@ -235,6 +271,15 @@ When a media agent (image/video/audio) produces output in SHOWRUNNER_DRIVEN mode
 2. Floor returns to orchestrator immediately
 3. Orchestrator receives `[auto-accepted {type} output]: {text}` in context
 4. This prevents the orchestrator from re-issuing the same `[ASSIGN]`
+
+### Example
+
+```bash
+bash examples/showcase.sh
+```
+
+An 8-step sitcom production pipeline: Writers Room breakout → script → 3 storyboard images → music → HTML showcase.
+See [examples/showcase.sh](../examples/showcase.sh).
 
 ### When to Use
 

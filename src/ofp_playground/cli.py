@@ -113,41 +113,51 @@ def _parse_agent_spec(spec: str) -> tuple[str, str, str, Optional[str], Optional
         "summarization", "showrunner", "orchestrator",
         "web-page", "web-page-generation", "web-showcase",
     }
-    parts = spec.split(":", 4)  # up to 5 parts to accommodate type:subtype:name:desc:model
-    if len(parts) < 2:
+    def _looks_like_model_id(s: str) -> bool:
+        """Return True only if s looks like a model identifier (no whitespace, ≤256 chars)."""
+        return bool(s) and len(s) <= 256 and not any(c in s for c in (" ", "\n", "\r", "\t"))
+
+    def _split_rest(rest: str) -> tuple[str, str | None]:
+        """Extract optional model from the END of a rest string.
+
+        The model (if present) is the last colon-delimited token that looks like
+        a model identifier (no whitespace, ≤256 chars).  Everything before it is
+        the description.  This handles descriptions that themselves contain colons
+        (e.g. multi-line system prompts with 'DESIGN: ...' inside).
+        """
+        idx = rest.rfind(":")
+        if idx >= 0 and _looks_like_model_id(rest[idx + 1:]):
+            return rest[:idx], rest[idx + 1:]
+        return rest, None
+
+    # Use minimal splits so that multi-colon descriptions are preserved intact.
+    # Detect type:subtype:name:... format (subtype in TASK_SUBTYPES)
+    head = spec.split(":", 3)  # at most 4 parts: [type, subtype-or-name, name-or-rest, rest]
+    if len(head) < 2:
         raise click.BadParameter(
             f"Invalid agent spec: '{spec}'. "
             f"Use 'type:name[:description[:model]]' or "
             f"'type:subtype:name[:description[:model]]' or "
             f"'-provider TYPE -name NAME [-system DESC] [-model MODEL]'"
         )
-    def _looks_like_model_id(s: str) -> bool:
-        """Return True only if s looks like a model identifier (no whitespace, ≤256 chars)."""
-        return bool(s) and len(s) <= 256 and not any(c in s for c in (" ", "\n", "\r", "\t"))
 
-    # Detect type:subtype:name:... format
-    if len(parts) >= 3 and parts[1].lower() in TASK_SUBTYPES:
-        agent_type = f"{parts[0]}:{parts[1]}".lower()
-        name = parts[2]
-        if len(parts) > 4 and _looks_like_model_id(parts[4]):
-            description = parts[3]
-            model_override = parts[4]
-        elif len(parts) > 3:
-            # Everything after name is description (may contain colons)
-            description = ":".join(parts[3:])
-            model_override = None
+    if len(head) >= 3 and head[1].lower() in TASK_SUBTYPES:
+        # type:subtype:name[:rest]
+        agent_type = f"{head[0]}:{head[1]}".lower()
+        name = head[2]
+        rest = head[3] if len(head) > 3 else ""
+        if rest:
+            description, model_override = _split_rest(rest)
         else:
             description = f"I am {name}, an AI assistant."
             model_override = None
     else:
-        agent_type = parts[0].lower()
-        name = parts[1]
-        if len(parts) > 3 and _looks_like_model_id(parts[3]):
-            description = parts[2] if len(parts) > 2 else f"I am {name}, an AI assistant."
-            model_override = parts[3]
-        elif len(parts) > 2:
-            description = ":".join(parts[2:])
-            model_override = None
+        # type:name[:rest]
+        agent_type = head[0].lower()
+        name = head[1]
+        rest = ":".join(head[2:]) if len(head) > 2 else ""
+        if rest:
+            description, model_override = _split_rest(rest)
         else:
             description = f"I am {name}, an AI assistant."
             model_override = None
