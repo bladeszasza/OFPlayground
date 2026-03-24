@@ -120,17 +120,36 @@ def _parse_agent_spec(spec: str) -> tuple[str, str, str, Optional[str], Optional
             f"'type:subtype:name[:description[:model]]' or "
             f"'-provider TYPE -name NAME [-system DESC] [-model MODEL]'"
         )
+    def _looks_like_model_id(s: str) -> bool:
+        """Return True only if s looks like a model identifier (no whitespace, ≤256 chars)."""
+        return bool(s) and len(s) <= 256 and not any(c in s for c in (" ", "\n", "\r", "\t"))
+
     # Detect type:subtype:name:... format
     if len(parts) >= 3 and parts[1].lower() in TASK_SUBTYPES:
         agent_type = f"{parts[0]}:{parts[1]}".lower()
         name = parts[2]
-        description = parts[3] if len(parts) > 3 else f"I am {name}, an AI assistant."
-        model_override = parts[4] if len(parts) > 4 else None
+        if len(parts) > 4 and _looks_like_model_id(parts[4]):
+            description = parts[3]
+            model_override = parts[4]
+        elif len(parts) > 3:
+            # Everything after name is description (may contain colons)
+            description = ":".join(parts[3:])
+            model_override = None
+        else:
+            description = f"I am {name}, an AI assistant."
+            model_override = None
     else:
         agent_type = parts[0].lower()
         name = parts[1]
-        description = parts[2] if len(parts) > 2 else f"I am {name}, an AI assistant."
-        model_override = parts[3] if len(parts) > 3 else None
+        if len(parts) > 3 and _looks_like_model_id(parts[3]):
+            description = parts[2] if len(parts) > 2 else f"I am {name}, an AI assistant."
+            model_override = parts[3]
+        elif len(parts) > 2:
+            description = ":".join(parts[2:])
+            model_override = None
+        else:
+            description = f"I am {name}, an AI assistant."
+            model_override = None
     return agent_type, name, description, model_override, None, None, 0
 
 
@@ -246,7 +265,7 @@ async def _run_session(
             )
         except Exception as e:
             logger.error("spawn_callback failed for spec '%s': %s", spec_str, e)
-            renderer.show_system_event(f"Orchestrator spawn failed: {e}")
+            raise
 
     floor._spawn_callback = _floor_spawn_callback
 
@@ -445,20 +464,23 @@ def _create_breakout_agent(spec_str: str, bus: MessageBus, conversation_id: str,
 
     provider_m = re.search(r"-provider\s+(\S+)", spec_str)
     name_m = re.search(r"-name\s+(\S+)", spec_str)
-    system_m = re.search(r"-system\s+(.+?)(?:\s+-model\s|\s*$)", spec_str)
+    system_m = re.search(r"-system\s+(.+?)(?:\s+-(?:model|max-tokens)\s|\s*$)", spec_str)
     model_m = re.search(r"-model\s+(\S+)", spec_str)
+    max_tokens_m = re.search(r"-max-tokens\s+(\d+)", spec_str)
 
     provider = provider_m.group(1) if provider_m else "hf"
     name = name_m.group(1) if name_m else "BreakoutAgent"
     system = system_m.group(1).strip() if system_m else f"You are {name}, an AI assistant."
     model_ov = model_m.group(1) if model_m else None
+    max_tokens_ov = int(max_tokens_m.group(1)) if max_tokens_m else None
 
+    agent = None
     if provider in ("anthropic", "claude"):
         api_key = settings.get_anthropic_key()
         if not api_key:
             raise ValueError(f"No Anthropic API key for breakout agent {name}")
         from ofp_playground.agents.llm.anthropic import AnthropicAgent
-        return AnthropicAgent(
+        agent = AnthropicAgent(
             name=name, synopsis=system, bus=bus, conversation_id=conversation_id,
             api_key=api_key, model=model_ov or settings.defaults.llm_model_anthropic,
         )
@@ -468,7 +490,7 @@ def _create_breakout_agent(spec_str: str, bus: MessageBus, conversation_id: str,
         if not api_key:
             raise ValueError(f"No OpenAI API key for breakout agent {name}")
         from ofp_playground.agents.llm.openai import OpenAIAgent
-        return OpenAIAgent(
+        agent = OpenAIAgent(
             name=name, synopsis=system, bus=bus, conversation_id=conversation_id,
             api_key=api_key, model=model_ov or settings.defaults.llm_model_openai,
         )
@@ -478,7 +500,7 @@ def _create_breakout_agent(spec_str: str, bus: MessageBus, conversation_id: str,
         if not api_key:
             raise ValueError(f"No Google API key for breakout agent {name}")
         from ofp_playground.agents.llm.google import GoogleAgent
-        return GoogleAgent(
+        agent = GoogleAgent(
             name=name, synopsis=system, bus=bus, conversation_id=conversation_id,
             api_key=api_key, model=model_ov or settings.defaults.llm_model_google,
         )
@@ -488,13 +510,17 @@ def _create_breakout_agent(spec_str: str, bus: MessageBus, conversation_id: str,
         if not api_key:
             raise ValueError(f"No HuggingFace API key for breakout agent {name}")
         from ofp_playground.agents.llm.huggingface import HuggingFaceAgent
-        return HuggingFaceAgent(
+        agent = HuggingFaceAgent(
             name=name, synopsis=system, bus=bus, conversation_id=conversation_id,
             api_key=api_key, model=model_ov or settings.defaults.llm_model_huggingface,
         )
 
     else:
         raise ValueError(f"Unknown provider '{provider}' for breakout agent {name}")
+
+    if agent is not None and max_tokens_ov and hasattr(agent, "_max_tokens"):
+        agent._max_tokens = max_tokens_ov
+    return agent
 
 
 async def _spawn_llm_agent(
@@ -848,7 +874,7 @@ async def _spawn_llm_agent(
                 api_key=api_key,
                 model=model_override or settings.defaults.llm_model_huggingface,
                 relevance_filter=settings.defaults.relevance_filter,
-                max_tokens=max_tokens_override or 500,
+                max_tokens=max_tokens_override,
             )
 
     elif agent_type in ("director", "director-hf"):
@@ -879,11 +905,13 @@ async def _spawn_llm_agent(
         return
 
     if agent:
-        # Apply timeout / retry settings from CLI flags
+        # Apply timeout / retry / token settings from CLI flags
         if timeout_override is not None:
             agent._timeout = timeout_override
         if max_retries_override:
             agent._max_retries = max_retries_override
+        if max_tokens_override and hasattr(agent, "_max_tokens"):
+            agent._max_tokens = max_tokens_override
         # Give every LLM agent access to the live URI→name registry
         if hasattr(agent, "set_name_registry"):
             agent.set_name_registry(floor._agents)

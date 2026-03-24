@@ -27,7 +27,7 @@ class HuggingFaceAgent(BaseLLMAgent):
         api_key: str,
         model: str = DEFAULT_MODEL,
         relevance_filter: bool = True,
-        max_tokens: int = 500,
+        max_tokens: Optional[int] = None,
     ):
         super().__init__(
             name=name,
@@ -38,7 +38,8 @@ class HuggingFaceAgent(BaseLLMAgent):
             relevance_filter=relevance_filter,
             api_key=api_key,
         )
-        self._max_tokens = max_tokens
+        if max_tokens is not None:
+            self._max_tokens = max_tokens
 
     def _get_client(self):
         from huggingface_hub import InferenceClient

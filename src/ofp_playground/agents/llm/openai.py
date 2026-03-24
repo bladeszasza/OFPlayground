@@ -72,7 +72,7 @@ class OpenAIAgent(BaseLLMAgent):
                 model=self._model,
                 instructions=system,
                 input=history,
-                max_output_tokens=500,
+                max_output_tokens=self._max_tokens,
             )
             return response.output_text
 

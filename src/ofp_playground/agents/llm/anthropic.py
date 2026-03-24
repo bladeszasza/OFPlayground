@@ -71,7 +71,7 @@ class AnthropicAgent(BaseLLMAgent):
         def _call():
             response = client.messages.create(
                 model=self._model,
-                max_tokens=500,
+                max_tokens=self._max_tokens,
                 system=system,
                 messages=messages,
             )

@@ -125,7 +125,7 @@ class ImageAgent(BasePlaygroundAgent):
             if text:
                 m = re.search(rf"\[DIRECTIVE for {re.escape(self._name)}\]:\s*(.+)", text, re.IGNORECASE)
                 if m:
-                    self._raw_prompt = f"{self._style}, {m.group(1).strip()}"
+                    self._raw_prompt = m.group(1).strip()
                     # Orchestrator will explicitly grant floor — don't request
             return
         text = self._extract_text_from_envelope(envelope)
@@ -134,7 +134,7 @@ class ImageAgent(BasePlaygroundAgent):
         # Extract clean [IMAGE]: directive from ShowRunner messages
         image_match = re.search(r"\[IMAGE\]:\s*(.+)", text, re.IGNORECASE)
         if image_match:
-            self._raw_prompt = f"{self._style}, {image_match.group(1).strip()}"
+            self._raw_prompt = image_match.group(1).strip()
             if not self._has_floor:
                 await self.request_floor("responding with image")
             return

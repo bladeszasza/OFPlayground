@@ -52,6 +52,7 @@ class GeminiMusicAgent(BasePlaygroundAgent):
         self._duration_seconds = duration_seconds
         self._has_floor = False
         self._last_text: Optional[str] = None
+        self._raw_prompt: Optional[str] = None  # directive task from orchestrator
         OUTPUT_MUSIC_DIR.mkdir(exist_ok=True)
 
     def _build_manifest(self) -> Manifest:
@@ -71,6 +72,29 @@ class GeminiMusicAgent(BasePlaygroundAgent):
             ],
         )
 
+    def _extract_music_prompt(self, text: str) -> str:
+        """Extract Lyria-native genre/mood/instrument terms from a directive brief."""
+        parts = []
+        for label in ("Genre", "Tone", "Style", "Mood"):
+            m = re.search(rf"{label}:\s*([^.\n]+)", text, re.IGNORECASE)
+            if m:
+                parts.append(m.group(1).strip())
+        if parts:
+            return ", ".join(parts)
+        # Fallback: strip prose directives and take first 40 meaningful words
+        clean = re.sub(r"(?:Compose|Create|Generate|Write)\s+a?\s*[\d\w-]*[\s-]second[^.]*\.", "", text, flags=re.IGNORECASE)
+        clean = re.sub(r"(?:Timing\s+cues?|Duration)[^.]*\.", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\[.*?\]", "", clean).strip()
+        words = clean.split()
+        return " ".join(words[:40]) if words else text[:200]
+
+    def _extract_duration(self, text: str) -> int:
+        """Parse requested duration in seconds from directive text."""
+        m = re.search(r"(\d+)[\s-]second", text, re.IGNORECASE)
+        if m:
+            return min(max(int(m.group(1)), 5), 60)  # clamp to 5–60s
+        return self._duration_seconds
+
     def _build_prompt(self, text: str) -> str:
         clean = re.sub(r"^\[.*?\]:\s*", "", text).strip()
         clean = re.sub(r"\*\*([^*]+)\*\*", r"\1", clean)
@@ -84,7 +108,7 @@ class GeminiMusicAgent(BasePlaygroundAgent):
             clean = " ".join(words[:40])
         return f"{self._style}, {clean}" if self._style else clean
 
-    async def _do_generate_music(self, prompt: str) -> Optional[Path]:
+    async def _do_generate_music(self, prompt: str, duration_seconds: int) -> Optional[Path]:
         import ssl
         from google import genai
         from google.genai import types
@@ -106,7 +130,7 @@ class GeminiMusicAgent(BasePlaygroundAgent):
 
         try:
             client = genai.Client(api_key=self._api_key, http_options={"api_version": "v1alpha"})
-            target_bytes = self._duration_seconds * SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE
+            target_bytes = duration_seconds * SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE
             audio_chunks: list[bytes] = []
             total_bytes = 0
 
@@ -145,9 +169,9 @@ class GeminiMusicAgent(BasePlaygroundAgent):
             wf.writeframes(pcm_data)
         return path
 
-    async def _generate_music(self, prompt: str) -> Optional[Path]:
+    async def _generate_music(self, prompt: str, duration_seconds: int) -> Optional[Path]:
         try:
-            return await asyncio.wait_for(self._do_generate_music(prompt), timeout=60.0)
+            return await asyncio.wait_for(self._do_generate_music(prompt, duration_seconds), timeout=60.0)
         except asyncio.TimeoutError:
             logger.error("[%s] Lyria music generation timed out", self._name)
             return None
@@ -174,7 +198,7 @@ class GeminiMusicAgent(BasePlaygroundAgent):
             if text:
                 m = re.search(rf"\[DIRECTIVE for {re.escape(self._name)}\]:\s*(.+)", text, re.IGNORECASE)
                 if m:
-                    self._last_text = m.group(1).strip()
+                    self._raw_prompt = m.group(1).strip()
                     # Orchestrator will explicitly grant floor — don't request
             return
 
@@ -189,22 +213,29 @@ class GeminiMusicAgent(BasePlaygroundAgent):
     async def _handle_grant_floor(self) -> None:
         self._has_floor = True
         try:
-            if self._last_text:
-                prompt = self._build_prompt(self._last_text)
-                logger.info("[%s] Generating Lyria music: %s", self._name, prompt[:80])
-                path = await self._generate_music(prompt)
-                if path:
-                    text_desc = f"Composed {self._duration_seconds}s of music for: {prompt[:200]}"
-                    await self.send_envelope(
-                        self._make_media_utterance_envelope(
-                            text_desc, "audio", "audio/wav", str(path.resolve())
-                        )
+            if self._raw_prompt:
+                duration = self._extract_duration(self._raw_prompt)
+                music_prompt = self._extract_music_prompt(self._raw_prompt)
+            elif self._last_text:
+                duration = self._duration_seconds
+                music_prompt = self._build_prompt(self._last_text)
+            else:
+                return
+            logger.info("[%s] Generating Lyria music (%ds): %s", self._name, duration, music_prompt[:80])
+            path = await self._generate_music(music_prompt, duration)
+            if path:
+                text_desc = f"Composed {duration}s of music for: {music_prompt[:200]}"
+                await self.send_envelope(
+                    self._make_media_utterance_envelope(
+                        text_desc, "audio", "audio/wav", str(path.resolve())
                     )
+                )
         except Exception as e:
             logger.error("[%s] Floor grant error: %s", self._name, e)
         finally:
             self._has_floor = False
             self._last_text = None
+            self._raw_prompt = None
             await self.yield_floor()
 
     async def _dispatch(self, envelope: Envelope) -> None:
