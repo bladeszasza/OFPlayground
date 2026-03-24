@@ -193,7 +193,7 @@ CHAPTER CONTENT — use when assigning StoryWriter (story) and painters (illustr
 
 AFTER ALL 10 CHAPTERS:
 
-[ASSIGN Composer]: Ambient loopable children's background music, 60 seconds, loop-seamless ending.
+[ASSIGN Composer]: Ambient loopable children's background music, 30 seconds, loop-seamless ending.
   Gentle and magical — soft xylophone melody, light accordion warmth, whimsical woodwind trills.
   Tempo: relaxed 85 BPM. Warm, dreamy, never loud. Suitable as always-on background while reading.
   Loop point is smooth: ending transitions naturally back to the opening. Cheerful, cosy, never scary.
@@ -286,18 +286,8 @@ Warm golden light. Fun and wobbly. NEVER scary. One illustration per assignment.
 
 # ─────────────────────────────────────────────
 
-OPENAI_PAINTER_PROMPT="You are OpenAIPainter — children's book illustrator, expressive colourful digital art.
-Characters: Noel (tiny 3-year-old, always the smallest, arms usually stretched toward animals),
-Scarlet (5, strong posture, kind face, sometimes tearful but hiding it),
-Blanka (5, Scarlet's twin, cool laid-back stance, one eyebrow often raised, dry expression).
-Style: thick outlines, saturated colours, big emotions, speed lines for action, sparkles for magic moments.
-Central European village setting. Soft pastels for kindness moments, primary colours for chaos.
-Every image should make a 6-year-old giggle. One illustration per assignment. No text overlaid."
-
-# ─────────────────────────────────────────────
-
 COMPOSER_PROMPT="You are Composer — children's book ambient music composer.
-Create a 60-second loopable ambient background track for a children's illustrated book.
+Create a 30-second loopable ambient background track for a children's illustrated book.
 Mood: gentle, magical, cosy — like a warm afternoon by the Danube.
 Instrumentation: soft xylophone melody, light accordion, whimsical woodwind trills, quiet pizzicato strings.
 Tempo: relaxed 85 BPM. Dynamic range: soft throughout — this plays in the background while children read.
@@ -408,13 +398,13 @@ ofp-playground start \
   --no-human \
   --policy showrunner_driven \
   --max-turns 400 \
-  --agent "anthropic:orchestrator:Director:${DIRECTOR_MISSION}" \
+  --agent "anthropic:orchestrator:Director:${DIRECTOR_MISSION}:claude-sonnet-4-6" \
   --agent "anthropic:StoryWriter:${STORY_WRITER_PROMPT}:claude-sonnet-4-6" \
   --agent "openai:Translator:${TRANSLATOR_PROMPT}:gpt-5.4-2026-03-05" \
   --agent "hf:text-to-image:NanoBananPainter:${NANO_BANAN_PAINTER_PROMPT}" \
   --agent "google:text-to-music:Composer:${COMPOSER_PROMPT}" \
-  --agent "hf:web-page-generation:ChapterBuilder:${CHAPTER_BUILDER_PROMPT}:deepseek-ai/DeepSeek-V3.2" \
-  --agent "hf:web-page-generation:IndexBuilder:${INDEX_BUILDER_PROMPT}:zai-org/GLM-5" \
+  --agent "anthropic:web-page-generation:ChapterBuilder:${CHAPTER_BUILDER_PROMPT}:claude-sonnet-4-6" \
+  --agent "anthropic:web-page-generation:IndexBuilder:${INDEX_BUILDER_PROMPT}:claude-sonnet-4-6" \
   --topic "$TOPIC"
 
   
