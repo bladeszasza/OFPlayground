@@ -269,18 +269,27 @@ async def _run_session(
 
     floor._spawn_callback = _floor_spawn_callback
 
+    _breakout_session_count = 0
+
     async def _floor_breakout_callback(
         topic: str,
         policy: "FloorPolicy",
         max_rounds: int,
         agent_specs: list[str],
-    ) -> str:
-        """Create temporary agents and run a breakout session.
+    ) -> "tuple[str, object]":
+        """Create temporary agents, run a breakout session, save artifact.
 
-        Each agent_spec is a string like:
-            -provider hf -name Alice -system You are a critic -model ...
+        Returns (compact_notification, artifact_path) tuple consumed by
+        the FloorManager to set _pending_breakout_file.
         """
-        from ofp_playground.floor.breakout import run_breakout_session
+        from pathlib import Path
+        from ofp_playground.floor.breakout import (
+            run_breakout_session,
+            save_breakout_artifact,
+            build_compact_notification,
+        )
+
+        nonlocal _breakout_session_count
 
         agents = []
         temp_bus = MessageBus()  # placeholder — run_breakout_session creates its own bus
@@ -295,9 +304,10 @@ async def _run_session(
                 renderer.show_system_event(f"Breakout agent failed: {e}")
 
         if len(agents) < 2:
-            return f"[Breakout: {topic}] — could not create enough agents ({len(agents)}/2 minimum)."
+            msg = f"[Breakout: {topic}] — could not create enough agents ({len(agents)}/2 minimum)."
+            return msg, None
 
-        summary = await run_breakout_session(
+        result = await run_breakout_session(
             topic=topic,
             agents=agents,
             policy=policy,
@@ -305,7 +315,23 @@ async def _run_session(
             max_rounds=max_rounds,
             parent_renderer=renderer,
         )
-        return summary
+
+        # Save full session as MD artifact
+        artifact_path = save_breakout_artifact(result, Path("ofp-breakout"))
+        renderer.show_system_event(f"[Breakout] Artifact: {artifact_path}")
+
+        # Register in MemoryStore so it appears in agent system prompts
+        _breakout_session_count += 1
+        if floor._memory_store:
+            floor._memory_store.store(
+                "breakout",
+                f"session_{_breakout_session_count}",
+                f"'{result.topic}' | {result.round_count} rounds | "
+                f"{', '.join(result.agent_names)} → {artifact_path}",
+            )
+
+        compact = build_compact_notification(result, artifact_path, _breakout_session_count)
+        return compact, artifact_path
 
     floor._breakout_callback = _floor_breakout_callback
 

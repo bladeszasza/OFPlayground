@@ -21,8 +21,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
-from typing import Optional
+from datetime import datetime
+from pathlib import Path
+from typing import NamedTuple, Optional
 
 from openfloor import (
     Conversation,
@@ -44,6 +47,15 @@ from ofp_playground.models.artifact import Utterance
 logger = logging.getLogger(__name__)
 
 BREAKOUT_FM_URI = "tag:ofp-playground.local,2025:breakout-floor-manager"
+BREAKOUT_OUTPUT_DIR = Path("ofp-breakout")
+
+
+class BreakoutResult(NamedTuple):
+    """Return value from run_breakout_session."""
+    history: list  # list[Utterance]
+    topic: str
+    agent_names: list  # list[str]
+    round_count: int
 
 
 class BreakoutFloorManager:
@@ -217,28 +229,91 @@ class BreakoutFloorManager:
             await self._grant_floor(next_uri)
 
 
+def _agent_turns(history: list) -> list:
+    """Filter history to non-floor-manager utterances."""
+    return [
+        u for u in history
+        if "floor-manager" not in u.speaker_uri and "breakout-floor" not in u.speaker_uri
+    ]
+
+
+def save_breakout_artifact(result: BreakoutResult, output_dir: Path = BREAKOUT_OUTPUT_DIR) -> Path:
+    """Save full breakout session history to a structured Markdown file.
+
+    Returns the path to the saved file.
+    """
+    output_dir.mkdir(exist_ok=True)
+    slug = re.sub(r"[^\w]+", "_", result.topic[:40]).strip("_").lower()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = output_dir / f"{timestamp}_{slug}.md"
+
+    lines = [
+        f"# Breakout Session: {result.topic}",
+        f"Date: {datetime.now().isoformat(timespec='seconds')}",
+        f"Agents: {', '.join(result.agent_names)} | Rounds: {result.round_count}",
+        "",
+        "---",
+        "",
+    ]
+    for u in _agent_turns(result.history):
+        lines.append(f"## {u.speaker_name}")
+        lines.append(u.text)
+        lines.append("")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def build_compact_notification(
+    result: BreakoutResult,
+    file_path: Path,
+    session_num: int,
+) -> str:
+    """Build a short (~200-word) notification for the parent orchestrator.
+
+    Includes stats and the final (most-refined) contribution from each agent
+    — enough context for the orchestrator to write a good [ASSIGN] directive
+    without receiving the full raw transcript.
+    """
+    agent_str = ", ".join(result.agent_names)
+    lines = [
+        f"[BREAKOUT COMPLETE]: {result.topic}",
+        f"{len(result.agent_names)} agents | {result.round_count} rounds | {agent_str}",
+        f"Artifact: {file_path}",
+        f"Memory key: breakout_{session_num}",
+        "",
+        "Highlights (final contribution per agent):",
+    ]
+
+    turns = _agent_turns(result.history)
+    # Last utterance per agent (most refined version)
+    last_by_agent: dict[str, str] = {}
+    for u in turns:
+        last_by_agent[u.speaker_name] = u.text
+
+    for name, text in last_by_agent.items():
+        snippet = text[:150].replace("\n", " ")
+        if len(text) > 150:
+            snippet += "..."
+        lines.append(f"[{name}]: {snippet}")
+
+    return "\n".join(lines)
+
+
 def extract_breakout_summary(
-    history: list[Utterance],
+    history: list,
     topic: str,
-    max_chars: int = 1500,
+    max_chars: int = 16000,
 ) -> str:
     """Build a plain-text summary from a breakout session's history.
 
-    The summary includes the topic, each agent's key contributions,
-    and a final takeaway suitable for injection into the parent
-    orchestrator's context.
+    Kept for backward-compatibility and error-path fallback.
     """
     if not history:
         return f"[Breakout: {topic}] — no contributions recorded."
 
-    lines: list[str] = []
-    lines.append(f"[BREAKOUT SUMMARY: {topic}]")
-
-    # Collect contributions per speaker (skip floor manager messages)
-    for u in history:
-        if "floor-manager" in u.speaker_uri or "breakout-floor" in u.speaker_uri:
-            continue
-        # Truncate very long individual utterances
+    lines: list[str] = [f"[BREAKOUT SUMMARY: {topic}]"]
+    for u in _agent_turns(history):
         text = u.text
         if len(text) > 400:
             text = text[:397] + "..."
@@ -247,7 +322,6 @@ def extract_breakout_summary(
     text = "\n".join(lines)
     if len(text) > max_chars:
         text = text[:max_chars].rsplit("\n", 1)[0] + "\n  ...(truncated)"
-
     return text
 
 
@@ -258,8 +332,8 @@ async def run_breakout_session(
     parent_conversation_id: str,
     max_rounds: int = 6,
     parent_renderer=None,
-) -> str:
-    """Run a full breakout session and return the summary text.
+) -> BreakoutResult:
+    """Run a full breakout session and return a BreakoutResult.
 
     This is the main entry point called by the FloorManager when the
     orchestrator requests a breakout via tool calling.
@@ -278,11 +352,15 @@ async def run_breakout_session(
         parent_renderer: Optional TerminalRenderer for status messages.
 
     Returns:
-        Summary text suitable for injection into parent orchestrator
-        context.
+        BreakoutResult with history, topic, agent_names, and round_count.
     """
     if len(agents) < 2:
-        return f"[Breakout: {topic}] — need at least 2 agents, got {len(agents)}."
+        return BreakoutResult(
+            history=[],
+            topic=topic,
+            agent_names=[a.name for a in agents],
+            round_count=0,
+        )
 
     # Create isolated bus and floor manager for the breakout
     breakout_bus = MessageBus()
@@ -337,15 +415,21 @@ async def run_breakout_session(
         for agent in agents:
             await breakout_bus.unregister(agent.speaker_uri)
 
-    summary = extract_breakout_summary(history, topic)
+    agent_names = [a.name for a in agents]
+    round_count = len(_agent_turns(history))
 
     if parent_renderer:
         parent_renderer.show_system_event(
             f"[Breakout] Completed: {topic[:60]} — "
-            f"{len(history)} utterances → summary injected"
+            f"{round_count} utterances → artifact pending"
         )
 
-    return summary
+    return BreakoutResult(
+        history=history,
+        topic=topic,
+        agent_names=agent_names,
+        round_count=round_count,
+    )
 
 
 async def _run_agent_for_breakout(agent) -> None:

@@ -89,7 +89,9 @@ class FloorManager:
         self._orchestrator_uri: Optional[str] = None
         self._assigned_uri: Optional[str] = None  # currently assigned agent in showrunner_driven mode
         self._spawn_callback: Optional[callable] = None  # set externally after creation
+        self._orchestrator_idle_grants: int = 0  # consecutive floor grants with no productive action
         self._breakout_callback: Optional[callable] = None  # set externally for breakout sessions
+        self._pending_breakout_file = None  # Path to last breakout artifact — injected into next ASSIGN
         self._manuscript: list[str] = []  # accumulated accepted chunks (showrunner_driven)
         self._last_worker_text: str = ""  # most recent non-orchestrator utterance text
         self._last_worker_name: str = ""  # speaker name for the above
@@ -509,10 +511,25 @@ class FloorManager:
                     if not self._memory_store.is_empty() and not is_remote:
                         memory_summary = self._memory_store.get_summary(max_chars=600)
                         directive += f"\n\n--- SESSION MEMORY ---\n{memory_summary}\n---"
+                    # Auto-inject the most recent breakout artifact into the first ASSIGN
+                    # after a breakout completes — topic-agnostic: any agent type works.
+                    if self._pending_breakout_file and not is_remote:
+                        try:
+                            artifact_content = self._pending_breakout_file.read_text(encoding="utf-8")
+                            directive += (
+                                f"\n\n--- BREAKOUT SESSION OUTPUT ---\n"
+                                f"{artifact_content}\n"
+                                f"--- END OF BREAKOUT OUTPUT ---"
+                            )
+                        except OSError as e:
+                            logger.warning("Could not read breakout artifact: %s", e)
+                        finally:
+                            self._pending_breakout_file = None  # consume — single use
                     # Send directive FIRST (agent sets its task instruction from this),
                     # then grant floor.  The directive comes from the floor manager as a
                     # private OFP whisper; BaseLLMAgent skips request_floor() for these
                     # so there is no spurious floor request racing the explicit grant.
+                    self._orchestrator_idle_grants = 0  # productive action — reset counter
                     await self._send_directed_utterance(directive, target_uri=target_uri)
                     await self.grant_to(target_uri)
                     if self._renderer:
@@ -521,10 +538,18 @@ class FloorManager:
                         )
                 else:
                     logger.warning("Orchestrator [ASSIGN]: agent '%s' not found", target_name)
+                    available = [n for u, n in self._agents.items() if "floor-manager" not in u]
+                    feedback = (
+                        f"[SYSTEM] [ASSIGN {target_name}] FAILED — no such agent on the floor. "
+                        f"Available agents: {available}. "
+                        f"Use [SPAWN ...] to create new agents or [ASSIGN] an existing one."
+                    )
+                    await self._send_directed_utterance(feedback, target_uri=self._orchestrator_uri)
                 continue
 
             # [ACCEPT]  — append last worker output to shared manuscript
             if re.match(r"\[ACCEPT\]", line, re.IGNORECASE):
+                self._orchestrator_idle_grants = 0
                 if self._last_worker_text:
                     self._manuscript.append(self._last_worker_text)
                     self._last_worker_text = ""
@@ -543,6 +568,7 @@ class FloorManager:
                 target_uri = self._resolve_agent_uri_by_name(target_name)
                 if target_uri:
                     self._assigned_uri = target_uri
+                    self._orchestrator_idle_grants = 0
                     self._policy._request_queue.clear()
                     await self.grant_to(target_uri)
                     await self._send_directed_utterance(
@@ -587,9 +613,17 @@ class FloorManager:
                                 f"[Orchestrator] Spawned: {spec_str[:60]}"
                             )
                     except Exception as e:
-                        logger.error("Orchestrator [SPAWN] failed: %s", e, exc_info=True)
+                        logger.error("Orchestrator [SPAWN] failed for '%s': %s", spec_str, e)
                         if self._renderer:
                             self._renderer.show_system_event(f"[Orchestrator] Spawn failed: {e}")
+                        if self._orchestrator_uri:
+                            feedback = (
+                                f"[SYSTEM] [SPAWN] FAILED for '{spec_str}': {e}. "
+                                f"Use the flag format: [SPAWN -provider TYPE -name Name -type task-type -system Description]. "
+                                f"Valid -provider values: anthropic, openai, google, hf. "
+                                f"Valid -type values: text-to-image, text-to-music, text-to-video, orchestrator."
+                            )
+                            await self._send_directed_utterance(feedback, target_uri=self._orchestrator_uri)
                 else:
                     logger.warning("Orchestrator [SPAWN]: no spawn_callback registered")
                 continue
@@ -648,23 +682,28 @@ class FloorManager:
             return
 
         try:
-            summary = await self._breakout_callback(topic, policy, max_rounds, agent_specs)
+            callback_result = await self._breakout_callback(topic, policy, max_rounds, agent_specs)
         except Exception as e:
             logger.error("Orchestrator [BREAKOUT] failed: %s", e, exc_info=True)
-            summary = f"[Breakout: {topic}] — failed: {e}"
+            callback_result = f"[Breakout: {topic}] — failed: {e}"
             if self._renderer:
                 self._renderer.show_system_event(f"[Orchestrator] Breakout failed: {e}")
 
-        # Inject summary as if a "worker" spoke — the orchestrator sees it
-        # in its next turn and can use the breakout results.
-        self._last_worker_text = summary
-        self._last_worker_name = "Breakout Session"
+        # Unpack (compact_text, artifact_path) tuple from new-style callbacks.
+        # Accept plain str for backward compatibility.
+        if isinstance(callback_result, tuple):
+            compact_text, artifact_path = callback_result
+            self._pending_breakout_file = artifact_path  # injected into next ASSIGN directive
+        else:
+            compact_text = callback_result
+
+        # Breakout output is context-only — do NOT set _last_worker_text so
+        # it cannot be [ACCEPT]-ed into the manuscript.
         self._assigned_uri = None
 
-        # Send summary as an utterance from the floor manager so
-        # the orchestrator agent receives it in its context.
+        # Send compact notification to orchestrator (not the raw full dump).
         await self._send_directed_utterance(
-            f"[BREAKOUT RESULT]\n{summary}",
+            f"[BREAKOUT COMPLETE]\n{compact_text}",
             target_uri=self._orchestrator_uri,
         )
         await self.grant_to(self._orchestrator_uri)
@@ -801,6 +840,29 @@ class FloorManager:
         next_holder = self._policy.yield_floor(sender_uri)
         if next_holder:
             await self._grant_floor(next_holder)
+        elif (
+            self._orchestrator_uri
+            and sender_uri == self._orchestrator_uri
+            and self._assigned_uri is None
+        ):
+            # SHOWRUNNER_DRIVEN: orchestrator owns the floor unless it has actively
+            # assigned a worker. If it yields with no pending assignment (e.g. a
+            # bare [ACCEPT] with no following [ASSIGN]), re-grant immediately so
+            # it can issue the next directive rather than going silent.
+            self._orchestrator_idle_grants += 1
+            _MAX_IDLE = 8
+            if self._orchestrator_idle_grants > _MAX_IDLE:
+                logger.error(
+                    "Orchestrator stuck: %d consecutive grants with no assignment — stopping",
+                    self._orchestrator_idle_grants,
+                )
+                if self._renderer:
+                    self._renderer.show_system_event(
+                        f"[Orchestrator] Stuck after {self._orchestrator_idle_grants} idle grants — stopping session"
+                    )
+                self.stop()
+                return
+            await self._grant_floor(self._orchestrator_uri)
 
     async def process_envelope(self, envelope: Envelope) -> None:
         """Process an incoming envelope from the bus."""
