@@ -4,10 +4,11 @@
 # Demonstrates cross-provider collaboration with a breakout Writers Room:
 #
 #   MAIN FLOOR (showrunner_driven)
-#   ├── Director   — Anthropic Claude   — orchestrator: drives the 7-step pipeline
-#   ├── Writer     — OpenAI GPT         — lead writer: synthesizes room output into final script
-#   ├── Painter    — HuggingFace FLUX   — storyboard image generation (3 shots)
-#   └── Composer   — Google Lyria       — comedic music cue generation
+#   ├── Director      — Anthropic Claude   — orchestrator: drives the 8-step pipeline
+#   ├── Writer        — OpenAI GPT         — lead writer: synthesizes room output into final script
+#   ├── Painter       — HuggingFace FLUX   — storyboard image generation (3 shots)
+#   ├── Composer      — Google Lyria       — comedic music cue generation
+#   └── WebShowcase   — Anthropic Claude   — post-production HTML showcase generator
 #
 #   WRITERS ROOM BREAKOUT (round_robin, 12 rounds)  ← spun up by Director in Step 1
 #   ├── PlotWriter     — Anthropic — scene structure, beats, cold open / tag
@@ -21,10 +22,11 @@
 #   4. Director assigns Shot 2 to Painter  (mid-scene reaction)
 #   5. Director assigns Shot 3 to Painter  (closing gag)
 #   6. Director assigns music brief to Composer
-#   7. [TASK_COMPLETE]
+#   7. Director assigns WebShowcase → HTML showcase page
+#   8. [TASK_COMPLETE]
 #
 # Requirements:
-#   ANTHROPIC_API_KEY — Director + PlotWriter
+#   ANTHROPIC_API_KEY — Director + PlotWriter + WebShowcase
 #   OPENAI_API_KEY    — Writer + DialogueWriter
 #   HF_API_KEY        — Painter (FLUX)
 #   GOOGLE_API_KEY    — GagWriter + Composer (Lyria)
@@ -42,8 +44,9 @@ YOUR PERMANENT TEAM on this floor:
 - Writer: lead writer — synthesizes the Writers Room output into the final polished script
 - Painter: generates storyboard shots as images
 - Composer: creates the comedic music cue
+- WebShowcase: post-production — assembles everything into a self-contained HTML page
 
-YOUR STRICT 7-STEP PIPELINE — one action per turn, in this exact order:
+YOUR STRICT 8-STEP PIPELINE — one action per turn, in this exact order:
 
 STEP 1 — WRITERS ROOM (your VERY FIRST action — call the tool, do not write text directives)
   Call create_breakout_session with these exact parameters:
@@ -90,15 +93,21 @@ STEP 6 — After Painter delivers Shot 3:
   [ACCEPT], then [ASSIGN Composer]: the music brief (scene tone, genre, comedic timing cues, duration 30 sec)
 
 STEP 7 — After Composer delivers:
+  [ACCEPT], then [ASSIGN WebShowcase]: Generate a self-contained HTML showcase page for this production run.
+  Include the full manuscript, all 3 storyboard images (embed as base64), the audio player, the pipeline
+  architecture (8 steps), execution timeline, and an honest quality analysis of the run.
+  Output a single .html file saved to ofp-showcase/.
+
+STEP 8 — After WebShowcase delivers:
   [ACCEPT], then issue [TASK_COMPLETE]
 
 UNIVERSAL RULES:
 - One action per turn. Never combine a breakout call with a text directive in the same turn.
-- [ACCEPT] only named-agent deliverables (Writer, Painter, Composer). Never [ACCEPT] breakout results — they are working context.
+- [ACCEPT] only named-agent deliverables (Writer, Painter, Composer, WebShowcase). Never [ACCEPT] breakout results — they are working context.
 - After the breakout completes, go directly to [ASSIGN Writer] without an [ACCEPT] first.
 - Never write creative content yourself — only direct.
 - If any agent fails: [REJECT AgentName]: request a more-specific revision.
-- Do NOT issue [TASK_COMPLETE] until all deliverables (script + 3 shots + music) are in the manuscript."
+- Do NOT issue [TASK_COMPLETE] until all deliverables (script + 3 shots + music + showcase) are confirmed."
 
 WRITER_PROMPT="You are Writer, a lead TV comedy writer and script editor with 20 years on animated sitcoms.
 Your job is to receive raw material produced by a Writers Room and forge it into a single, polished scene script.
@@ -135,13 +144,46 @@ When given a music brief, create a short music cue (15-30 seconds) that:
 
 Output music only. No explanatory text."
 
+SHOWCASE_PROMPT="You are WebShowcase, a post-production agent for OFP Playground runs.
+Your sole job: take the raw artifacts of a completed multi-agent run and produce a single, self-contained HTML showcase page.
+
+INPUTS YOU WILL RECEIVE in the assignment directive:
+- DIRECTOR ASSIGNMENT — the task description and pipeline context
+- MANUSCRIPT — the full accepted deliverables (script, images refs, music ref) under '--- STORY SO FAR ---'
+- IMAGES — base64-encoded PNG artifacts provided in the context (embed directly as data URIs)
+- AUDIO — audio filename reference (sibling file alongside the HTML)
+- FLOOR LOG — timestamped event log of the run
+
+OUTPUT FORMAT: Return ONLY a complete HTML document (<!DOCTYPE html> through </html>).
+No markdown, no explanation, no preamble. Just the HTML.
+
+PAGE STRUCTURE — 7 SECTIONS:
+1. HERO — title from script, subtitle, key stats (agents, providers, deliverables)
+2. ARCHITECTURE — numbered pipeline steps, agent tags with provider color coding
+   (Anthropic=amber, OpenAI=cyan, HuggingFace=green, Google=red)
+3. TIMELINE — floor log events chronologically, errors highlighted, milestones marked
+4. VISUAL PRODUCTION — storyboard gallery (images embedded as base64 data URIs), audio player
+5. MANUSCRIPT — full script in styled monospace, character names highlighted
+6. ANALYSIS — honest evaluation: orchestration quality, manuscript structure, image fidelity, timing
+7. RUN IT — shell commands to reproduce
+
+DESIGN: Dark cinematic.
+- Background: #0a0a0f, accent: #f0a030 (amber primary), #00bcd4 (cyan secondary)
+- Provider colors: Anthropic=#f0a030, OpenAI=#00bcd4, HuggingFace=#4caf50, Google=#f44336
+- Fonts: Space Mono (code/technical), any display serif for headings — load from Google Fonts
+- Grain overlay via SVG filter, scroll-reveal via IntersectionObserver
+- No external JS dependencies beyond Google Fonts
+- Images inline as base64 data URIs — page must work as a local file
+- Responsive: single column on mobile"
+
 ofp-playground start \
   --no-human \
   --policy showrunner_driven \
-  --max-turns 120 \
+  --max-turns 160 \
   --agent "anthropic:orchestrator:Director:${DIRECTOR_MISSION}" \
   --agent "openai:Writer:${WRITER_PROMPT}" \
   --agent "hf:text-to-image:Painter:${PAINTER_PROMPT}" \
   --agent "google:text-to-music:Composer:${COMPOSER_PROMPT}" \
+  --agent "anthropic:web-showcase:WebShowcase:${SHOWCASE_PROMPT}" \
   --show-floor-events \
   --topic "$TOPIC"

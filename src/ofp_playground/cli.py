@@ -110,7 +110,7 @@ def _parse_agent_spec(spec: str) -> tuple[str, str, str, Optional[str], Optional
         "text-to-image", "image-to-text", "text-to-video", "text-generation", "text-to-music",
         "image-text-to-text", "image-classification", "object-detection",
         "image-segmentation", "token-classification", "text-classification",
-        "summarization", "showrunner", "orchestrator",
+        "summarization", "showrunner", "orchestrator", "web-showcase",
     }
     parts = spec.split(":", 4)  # up to 5 parts to accommodate type:subtype:name:desc:model
     if len(parts) < 2:
@@ -607,9 +607,17 @@ async def _spawn_llm_agent(
                 settings=settings,
             )
             floor.register_orchestrator(agent.speaker_uri)
+        elif task == "web-showcase":
+            from ofp_playground.agents.llm.web_showcase import WebShowcaseAgent
+            agent = WebShowcaseAgent(
+                name=name, synopsis=description, bus=bus,
+                conversation_id=floor.conversation_id,
+                api_key=api_key, provider="anthropic",
+                model=model_override or settings.defaults.llm_model_anthropic,
+            )
         else:
             renderer.show_system_event(
-                f"Unknown Anthropic task: {task}. Use anthropic for text-generation, image-to-text, or orchestrator."
+                f"Unknown Anthropic task: {task}. Use anthropic for text-generation, image-to-text, orchestrator, or web-showcase."
             )
             return
 
@@ -664,9 +672,17 @@ async def _spawn_llm_agent(
                 settings=settings,
             )
             floor.register_orchestrator(agent.speaker_uri)
+        elif task == "web-showcase":
+            from ofp_playground.agents.llm.web_showcase import WebShowcaseAgent
+            agent = WebShowcaseAgent(
+                name=name, synopsis=description, bus=bus,
+                conversation_id=floor.conversation_id,
+                api_key=api_key, provider="openai",
+                model=model_override or settings.defaults.llm_model_openai,
+            )
         else:
             renderer.show_system_event(
-                f"Unknown OpenAI task: {task}. Use OpenAI for text-generation, text-to-image, image-to-text, or orchestrator."
+                f"Unknown OpenAI task: {task}. Use OpenAI for text-generation, text-to-image, image-to-text, orchestrator, or web-showcase."
             )
             return
 
@@ -731,9 +747,17 @@ async def _spawn_llm_agent(
                 settings=settings,
             )
             floor.register_orchestrator(agent.speaker_uri)
+        elif task == "web-showcase":
+            from ofp_playground.agents.llm.web_showcase import WebShowcaseAgent
+            agent = WebShowcaseAgent(
+                name=name, synopsis=description, bus=bus,
+                conversation_id=floor.conversation_id,
+                api_key=api_key, provider="google",
+                model=model_override or settings.defaults.llm_model_google,
+            )
         else:
             renderer.show_system_event(
-                f"Unknown Google task: {task}. Use google for text-generation, text-to-image, image-to-text, text-to-music, or orchestrator."
+                f"Unknown Google task: {task}. Use google for text-generation, text-to-image, image-to-text, text-to-music, orchestrator, or web-showcase."
             )
             return
 
@@ -889,6 +913,14 @@ async def _spawn_llm_agent(
                 settings=settings,
             )
             floor.register_orchestrator(agent.speaker_uri)
+        elif task == "web-showcase":
+            from ofp_playground.agents.llm.web_showcase import WebShowcaseAgent
+            agent = WebShowcaseAgent(
+                name=name, synopsis=description, bus=bus,
+                conversation_id=floor.conversation_id,
+                api_key=api_key, provider="hf",
+                model=model_override or settings.defaults.llm_model_huggingface,
+            )
         else:
             # Default: text-generation (and any other text-in/text-out tasks)
             from ofp_playground.agents.llm.huggingface import HuggingFaceAgent

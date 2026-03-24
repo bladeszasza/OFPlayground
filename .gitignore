@@ -60,6 +60,7 @@ ofp-images/
 ofp-videos/
 ofp-music/
 ofp-breakout/
+ofp-showcase/
 manuscript_*.txt
 memory_*.json
 CLAUDE.md
