@@ -413,6 +413,8 @@ ofp-playground start \
   --agent "openai:Translator:${TRANSLATOR_PROMPT}:gpt-5.4-2026-03-05" \
   --agent "hf:text-to-image:NanoBananPainter:${NANO_BANAN_PAINTER_PROMPT}" \
   --agent "google:text-to-music:Composer:${COMPOSER_PROMPT}" \
-  --agent "anthropic:web-page-generation:ChapterBuilder:${CHAPTER_BUILDER_PROMPT}:claude-sonnet-4-6" \
-  --agent "anthropic:web-page-generation:IndexBuilder:${INDEX_BUILDER_PROMPT}:claude-sonnet-4-6" \
+  --agent "hf:web-page-generation:ChapterBuilder:${CHAPTER_BUILDER_PROMPT}:deepseek-ai/DeepSeek-V3.2" \
+  --agent "hf:web-page-generation:IndexBuilder:${INDEX_BUILDER_PROMPT}:zai-org/GLM-5" \
   --topic "$TOPIC"
+
+  
