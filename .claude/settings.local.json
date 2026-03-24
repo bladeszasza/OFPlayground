@@ -40,7 +40,9 @@
       "Bash(grep -v \"^\\\\.\\\\.$\")",
       "Bash(head -20 grep -n \"default.*model\\\\|MODEL\\\\|flux\\\\|FLUX\" /Users/bolyos/Development/ofpPlaygorund/src/ofp_playground/agents/llm/image.py)",
       "Bash(head -20 grep -n \"gpt-4.5\\\\|nano\\\\|o4-mini\" /Users/bolyos/Development/ofpPlaygorund/src/ofp_playground/agents/llm/openai.py)",
-      "Bash(head -10 grep -n \"gpt-5.4\\\\|gpt-4.5\\\\|nano\" /Users/bolyos/Development/ofpPlaygorund/src/ofp_playground/agents/llm/openai.py)"
+      "Bash(head -10 grep -n \"gpt-5.4\\\\|gpt-4.5\\\\|nano\" /Users/bolyos/Development/ofpPlaygorund/src/ofp_playground/agents/llm/openai.py)",
+      "Bash(grep -n \"ofp-images\\\\|ofp-music\\\\|ofp-videos\" /Users/bolyos/Development/ofpPlaygorund/src/ofp_playground/**/*.py)",
+      "Bash(grep -n \"breakout_callback\\\\s*=\" /Users/bolyos/Development/ofpPlaygorund/src/ofp_playground/**/*.py)"
     ]
   }
 }
