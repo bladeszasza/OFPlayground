@@ -182,6 +182,21 @@ class WebPageAgent(BaseLLMAgent):
         text = re.sub(r"\n?```\s*$", "", text)
         return text.strip()
 
+    def _extract_file_directive(self, text: str) -> tuple[str, str]:
+        """Extract === FILE: name.html === wrapper from LLM output.
+
+        Returns (filename, html_content).  If no wrapper is found, returns
+        ('', text) so the caller falls back to the timestamp slug.
+        """
+        m = re.search(
+            r"===\s*FILE:\s*([\w.\-]+\.html)\s*===\s*\n(.*?)(?:===\s*END FILE\s*===|$)",
+            text,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        if m:
+            return m.group(1).strip(), m.group(2).strip()
+        return "", text
+
     def _postprocess_inline_images(self, html: str) -> str:
         """Replace filename-based img src references with inline base64 data URIs.
 
@@ -277,10 +292,14 @@ class WebPageAgent(BaseLLMAgent):
 
             if html:
                 html = self._strip_markdown_fences(html)
+                # Extract === FILE: name.html === directive if the LLM wrapped its output
+                filename, html = self._extract_file_directive(html)
                 html = self._postprocess_inline_images(html)  # inline base64 after generation
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                slug = re.sub(r"[^\w]+", "_", self._name.lower())
-                path = self._output_dir / f"{ts}_{slug}.html"
+                if not filename:
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    slug = re.sub(r"[^\w]+", "_", self._name.lower())
+                    filename = f"{ts}_{slug}.html"
+                path = self._output_dir / filename
                 path.write_text(html, encoding="utf-8")
 
                 # Copy audio/video files alongside the HTML so relative refs work
