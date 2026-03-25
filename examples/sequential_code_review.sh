@@ -84,13 +84,24 @@ SUGGESTION:
 If nothing to improve, say: READABILITY: excellent — clean and idiomatic.
 Never discuss security or performance — that is not your job."
 
-TOPIC="Code review session${SNIPPET:+: $SNIPPET}"
-
-ofp-playground start \
-  --policy sequential \
-  --human-name Developer \
-  --agent "anthropic:SecurityReviewer:${SECURITY_PROMPT}" \
-  --agent "anthropic:PerformanceReviewer:${PERFORMANCE_PROMPT}" \
-  --agent "openai:StyleReviewer:${STYLE_PROMPT}" \
-  --show-floor-events \
-  ${SNIPPET:+--topic "$SNIPPET"}
+if [ -n "$SNIPPET" ]; then
+  # Automatic mode: reviewers run without human input
+  ofp-playground start \
+    --no-human \
+    --policy sequential \
+    --max-turns 3 \
+    --agent "anthropic:SecurityReviewer:${SECURITY_PROMPT}" \
+    --agent "anthropic:PerformanceReviewer:${PERFORMANCE_PROMPT}" \
+    --agent "openai:StyleReviewer:${STYLE_PROMPT}" \
+    --show-floor-events \
+    --topic "$SNIPPET"
+else
+  # Interactive mode: paste code at the prompt
+  ofp-playground start \
+    --policy sequential \
+    --human-name Developer \
+    --agent "anthropic:SecurityReviewer:${SECURITY_PROMPT}" \
+    --agent "anthropic:PerformanceReviewer:${PERFORMANCE_PROMPT}" \
+    --agent "openai:StyleReviewer:${STYLE_PROMPT}" \
+    --show-floor-events
+fi

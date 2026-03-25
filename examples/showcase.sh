@@ -3,7 +3,7 @@
 # Usage: bash examples/showcase.sh [TOPIC]
 # Keys: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, HF_API_KEY
 
-TOPIC="${1:-an illustrated children's adventure story about unlikely friends discovering a hidden magic}"
+TOPIC="${1:-an illustrated adventure story about unlikely friends discovering a hidden magic}"
 
 # ─────────────────────────────────────────────
 # AGENT SYSTEM PROMPTS
