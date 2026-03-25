@@ -335,6 +335,7 @@ class FloorManager:
         # SHOWRUNNER_DRIVEN: orchestrator utterance → parse its directives
         # ----------------------------------------------------------------
         if self._orchestrator_uri and sender_uri == self._orchestrator_uri:
+            self._orchestrator_idle_grants = 0  # any response resets the nudge sequence
             if self._renderer:
                 self._renderer.show_utterance(
                     sender_uri, sender_name, text,

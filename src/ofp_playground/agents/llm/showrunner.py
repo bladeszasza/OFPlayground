@@ -638,9 +638,16 @@ class AnthropicOrchestratorAgent(_OrchestratorBase, AnthropicAgent):
                 if block.type == "text" and block.text.strip():
                     final_text = block.text.strip()
                 elif block.type == "tool_use":
-                    directive = self._spawn_or_assign(block.name, block.input)
-                    if directive:
-                        spawn_directives.append(directive)
+                    if block.name in ("store_memory", "recall_memory") and memory_store:
+                        execute_memory_tool(block.name, block.input, memory_store, self._name)
+                    elif block.name == "create_breakout_session":
+                        directive = tool_use_to_breakout_directive(block.input)
+                        if directive:
+                            spawn_directives.append(directive)
+                    else:
+                        directive = self._spawn_or_assign(block.name, block.input)
+                        if directive:
+                            spawn_directives.append(directive)
 
         text_parts = spawn_directives + ([final_text] if final_text else [])
         return "\n".join(text_parts) or None

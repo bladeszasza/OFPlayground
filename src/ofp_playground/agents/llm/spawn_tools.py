@@ -235,9 +235,11 @@ def tool_use_to_directives(tool_name: str, args: dict) -> str:
     The result is fed back into the FloorManager's existing text-parsing pipeline,
     so no changes to FloorManager are needed.
     """
-    name = args["name"]
+    name = args.get("name")
+    if not name:
+        return ""
     model_part = f" -model {args['model']}" if args.get("model") else ""
-    initial_task = args["initial_task"]
+    initial_task = args.get("initial_task", "")
 
     if tool_name == "spawn_text_agent":
         provider = args.get("provider", "hf")
