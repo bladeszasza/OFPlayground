@@ -98,10 +98,10 @@ The FloorManager tracks which agents have spoken each round via `_agents_spoken_
 ### Example
 
 ```bash
-bash examples/round_robin_novel.sh 5
+bash examples/round_robin_novel.sh "a gothic horror mystery" 5
 ```
 
-Five-chapter neo-noir thriller: Director sets beats → 3 character-voice authors write → ShowRunner synthesises into canon.
+Five-part collaborative story (any genre): Director sets scene beats → 3 voice agents (Protagonist, Mentor, Antagonist) write → ShowRunner synthesises into canon.
 See [examples/round_robin_novel.sh](../examples/round_robin_novel.sh).
 
 ### When to Use
@@ -195,7 +195,7 @@ yield_floor(uri):
 ### Example
 
 ```bash
-bash examples/free_for_all_brainstorm.sh "An app that helps freelancers price their work confidently"
+bash examples/free_for_all_brainstorm.sh "the most transformative opportunity in AI right now"
 ```
 
 Four product personas (UserResearcher, PM, Designer, DevilsAdvocate) jump in whenever they have a relevant take — often 2–3 at once.
@@ -278,7 +278,7 @@ When a media agent (image/video/audio) produces output in SHOWRUNNER_DRIVEN mode
 bash examples/showcase.sh
 ```
 
-An 8-step sitcom production pipeline: Writers Room breakout → script → 3 storyboard images → music → HTML showcase.
+Ten-chapter illustrated story pipeline: story brainstorm breakout → StoryWriter → review/cutscene breakouts → NanoBananPainter → ChapterBuilder → Composer → IndexBuilder.
 See [examples/showcase.sh](../examples/showcase.sh).
 
 ### When to Use

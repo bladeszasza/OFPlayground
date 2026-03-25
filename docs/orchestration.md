@@ -257,36 +257,63 @@ Priority-ordered: Goals first, then tasks, then decisions, down to preferences. 
 
 ## Production Pipeline Example
 
-The `examples/showcase.sh` demonstrates a full 8-step pipeline:
+The `examples/showcase.sh` demonstrates a full 10-chapter illustrated story pipeline (topic is passed as `$1`):
 
 ```
-Step 1: [BREAKOUT] → Writers Room (3 agents, 23 rounds)
-Step 2: [ASSIGN Writer] → Harvest & polish into final script
-Step 3: [ASSIGN Painter] → Shot 1 (establishing)
-Step 4: [ASSIGN Painter] → Shot 2 (mid-scene reaction)
-Step 5: [ASSIGN Painter] → Shot 3 (closing gag)
-Step 6: [ASSIGN Composer] → Music cue
-Step 7: [ASSIGN WebShowcase] → HTML showcase page
-Step 8: [TASK_COMPLETE]
+STEP 0: create_breakout_session → Story Brainstorm (6 agents, 16 rounds, free_for_all)
+        → Director extracts arc, characters, world
+
+For each of 10 chapters:
+  STEP A: [ASSIGN StoryWriter] → Write chapter (text + scene description)
+  STEP B: [ACCEPT] + create_breakout_session → Peer review (2 agents, 2 rounds, round_robin)
+  STEP B½: create_breakout_session → Cutscene (2 dark-comedy agents, optional, ≥3 chapters)
+  STEP C: [REJECT StoryWriter] only if both reviewers say REVISE
+  STEP D: [ASSIGN NanoBananPainter] → Chapter illustration (auto-accepted)
+  STEP E: [ASSIGN ChapterBuilder] → HTML chapter page
+
+After chapter 10:
+  [ASSIGN Composer] → 30-second loopable ambient music (auto-accepted)
+  [ASSIGN IndexBuilder] → master index.html (cover + TOC + character cards + music player)
+  [ACCEPT] → [TASK_COMPLETE]
 ```
 
 ### Agent Lineup
 
 | Agent | Provider | Role |
 |-------|----------|------|
-| Director | Anthropic (orchestrator) | Drives the 8-step pipeline |
-| Writer | OpenAI | Synthesizes Writers Room output |
-| Painter | HuggingFace FLUX | Generates 3 storyboard images |
-| Composer | Google Lyria | Creates comedic music cue |
-| WebShowcase | OpenAI | Generates HTML showcase page |
+| Director | Anthropic (orchestrator) | Drives the full pipeline, spawns all breakouts |
+| StoryWriter | Anthropic (Sonnet) | Writes one chapter per assignment |
+| NanoBananPainter | HuggingFace (text-to-image) | Illustrates each chapter |
+| Composer | Google Lyria (text-to-music) | Ambient loopable background music |
+| ChapterBuilder | HuggingFace (web-page-generation, DeepSeek) | HTML chapter pages |
+| IndexBuilder | Anthropic (web-page-generation, Haiku) | Master index.html |
 
-### Writers Room Breakout
+### Breakout Sessions
 
-| Agent | Provider | Role |
-|-------|----------|------|
-| PlotWriter | Anthropic | Scene structure, beats, timing |
-| DialogueWriter | OpenAI | Character voice, dialogue lines |
-| GagWriter | Google | Cutaway gags, visual comedy |
+**Story Brainstorm** (STEP 0, `free_for_all`, 16 rounds):
+
+| Agent | Role |
+|-------|------|
+| YouthfulVoice | Emotional core — instinct, wonder, what the story must feel like |
+| HeartVoice | Narrative will — spine, stakes, what cannot be cut |
+| CriticalVoice | Editor/ironist — sharp alternatives, high standards |
+| DarkHumor | Absurdist undercurrent — adult humour hiding in the warmth |
+| EmotionalDepth | Subtext excavation — what the story means below the waterline |
+| NarrativeArchitect | Structure — arc shape, chapter payoffs, escalation curve |
+
+**Peer Review** (per chapter, `round_robin`, 2 rounds):
+
+| Agent | Role |
+|-------|------|
+| LiteraryReviewer | Children's book editor — character consistency, resonance |
+| ChildExperience | Child development specialist — vocabulary, engagement |
+
+**Cutscene** (optional per chapter, `round_robin`, 2 rounds):
+
+| Agent | Role |
+|-------|------|
+| PeterGriffin | Family Guy-style dark-comedy cutaway setup |
+| StewieGriffin | Escalates with twist/callback |
 
 ### Orchestrator Resilience
 

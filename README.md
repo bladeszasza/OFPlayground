@@ -2,9 +2,7 @@
 
 A model-agnostic, multi-provider sandbox for the [Open Floor Protocol](https://github.com/open-voice-interoperability/openfloor-python).
 
-The idea is straightforward: give multiple AI agents a shared floor, let them take turns following OFP rules, and see what happens when you hand one of them the conductor's baton. What came out surprised us a little.
-
-> **The proof is in the running.** The `showcase.sh` script produces a 10-chapter bilingual illustrated children's book — each chapter written, peer-reviewed, translated to Hungarian, illustrated, and assembled into a self-contained HTML page — driven entirely by OFP message-passing between agents from Anthropic, Google, and HuggingFace. No custom orchestration code. Just agents on a shared floor.
+The idea is straightforward: give multiple AI agents a shared floor, let them take turns following OFP rules, and see what happens when you hand one of them the conductor's baton. 
 
 ---
 
@@ -19,39 +17,6 @@ OFP Playground is a CLI tool that:
 - includes a showrunner-driven policy where one agent acts as a director, dynamically assigning tasks, accepting or rejecting output, and spawning new specialist agents on demand
 
 It's not a framework. It's a playground. We built it to explore what OFP can actually do when pushed past simple chat. The showcase is our answer.
-
----
-
-## The Showcase
-
-`examples/showcase.sh` is the main demo. It runs a fully autonomous pipeline:
-
-```
-Director (Claude) orchestrates:
-  → StoryWriter writes each chapter in English
-  → Breakout session: two peer reviewers critique the chapter
-  → Translator renders it in Hungarian
-  → NanoBananPainter (HF) illustrates the scene
-  → ChapterBuilder assembles a bilingual HTML page with EN/HU toggle
-  → Composer (Google Lyria) produces ambient loopable background music
-  → IndexBuilder creates the master index page
-```
-
-The Director never writes prose. It only issues `[ASSIGN]`, `[ACCEPT]`, `[REJECT]`, and `[TASK_COMPLETE]` directives. The FloorManager parses these and routes floor grants accordingly. Every agent responds to OFP events — utterance, grantFloor, yieldFloor — nothing else.
-
-The result is a complete, self-contained illustrated book with:
-- 10 English chapters + Hungarian translations
-- One illustration per chapter
-- Bilingual HTML pages with language toggle
-- Ambient background music
-- A character index and chapter grid
-
-```bash
-# Requirements: ANTHROPIC_API_KEY, GOOGLE_API_KEY, HF_API_KEY
-chmod +x examples/showcase.sh && ./examples/showcase.sh
-```
-
-Output lands in `result/<session-id>/web/` and `result/<session-id>/images/`.
 
 ---
 
@@ -153,41 +118,13 @@ Supported task types across providers: text generation, image generation, image-
 
 ---
 
-## Orchestrator (Showrunner-Driven)
-
-Any provider can act as orchestrator. It speaks first, assigns tasks, evaluates output, and spawns new agents on demand. See [docs/orchestration.md](docs/orchestration.md) for the full directive reference.
-
-| Directive | Action |
-|---|---|
-| `[ASSIGN AgentName]: task` | Grant floor to the named agent with a task |
-| `[ACCEPT]` | Accept the last output; continue the pipeline |
-| `[REJECT AgentName]: reason` | Re-grant with revision feedback |
-| `[KICK AgentName]` | Remove an agent from the session |
-| `[SPAWN spec]` | Dynamically create a new specialist agent |
-| `[TASK_COMPLETE]` | End the session |
-
-Agent spawning goes through **native tool calling** — the orchestrator calls typed tools (`spawn_text_agent`, `spawn_image_agent`, etc.) built from whatever API keys are actually present. It can't hallucinate a provider that isn't configured.
-
-```bash
-ofp-playground start \
-  --no-human \
-  --policy showrunner_driven \
-  --topic "Create a short illustrated story with 3 chapters." \
-  --agent "-provider anthropic -type orchestrator -name Director -model claude-sonnet-4-6 \
-           -system Create a short illustrated story with 3 chapters."
-```
-
-The orchestrator starts alone and spawns whatever it needs.
-
----
-
 ## Examples
 
 Ready-made scripts in [`examples/`](examples/):
 
 | Script | What it does |
 |---|---|
-| [`showcase.sh`](examples/showcase.sh) | Full bilingual illustrated children's book — the main demo |
+| [`showcase.sh`](examples/showcase.sh) | Full illustrated story pipeline — 10 chapters, images, music, HTML (any topic) |
 | [`round_robin_novel.sh`](examples/round_robin_novel.sh) | Round-robin collaborative novel |
 | [`sequential_code_review.sh`](examples/sequential_code_review.sh) | Sequential code review pipeline |
 | [`moderated_investment_committee.sh`](examples/moderated_investment_committee.sh) | Moderated investment committee |
@@ -213,6 +150,34 @@ ofp-playground start --no-human \
 ```
 
 Known live agents: `polly`, `arxiv`, `github`, `sec`, `web-search`, `wikipedia`, `stella`, `verity`, `profanity`. Full registry at [openfloor.dev/agent-registry](https://openfloor.dev/agent-registry).
+
+---
+
+## Orchestrator (Showrunner-Driven)
+
+Any provider can act as orchestrator. It speaks first, assigns tasks, evaluates output, and spawns new agents on demand. See [docs/orchestration.md](docs/orchestration.md) for the full directive reference.
+
+| Directive | Action |
+|---|---|
+| `[ASSIGN AgentName]: task` | Grant floor to the named agent with a task |
+| `[ACCEPT]` | Accept the last output; continue the pipeline |
+| `[REJECT AgentName]: reason` | Re-grant with revision feedback |
+| `[KICK AgentName]` | Remove an agent from the session |
+| `[SPAWN spec]` | Dynamically create a new specialist agent |
+| `[TASK_COMPLETE]` | End the session |
+
+Agent spawning goes through **native tool calling** — the orchestrator calls typed tools (`spawn_text_agent`, `spawn_image_agent`, etc.) built from whatever API keys are actually present. It can't hallucinate a provider that isn't configured.
+
+```bash
+ofp-playground start \
+  --no-human \
+  --policy showrunner_driven \
+  --topic "Create a short illustrated story with 3 chapters." \
+  --agent "-provider anthropic -type orchestrator -name Director -model claude-sonnet-4-6 \
+           -system Create a short illustrated story with 3 chapters."
+```
+
+The orchestrator starts alone and spawns whatever it needs.
 
 ---
 
