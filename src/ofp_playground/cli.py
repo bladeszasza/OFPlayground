@@ -11,6 +11,23 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Noisy third-party loggers to silence even in verbose mode
+_QUIET_LOGGERS = [
+    "httpcore", "httpx", "urllib3", "asyncio",
+    "anthropic._base_client", "openai._base_client",
+    "google_genai", "google.auth",
+]
+
+
+def _configure_logging(verbose: bool) -> None:
+    """Configure logging: ofp_playground at DEBUG when verbose, noisy libs always at WARNING."""
+    logging.basicConfig(level=logging.WARNING)
+    if verbose:
+        logging.getLogger("ofp_playground").setLevel(logging.DEBUG)
+    for name in _QUIET_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
 import click
 from rich.console import Console
 
@@ -242,109 +259,7 @@ async def _run_session(
 
     registry = AgentRegistry()
 
-    # Spawn callback for OrchestratorAgent [SPAWN] directives (set after registry exists)
-    async def _floor_spawn_callback(spec_str: str) -> None:
-        try:
-            agent_type, name, description, model_ov, max_tokens_ov, timeout_ov, max_retries_ov = _parse_agent_spec(spec_str)
-            task_type = agent_type.split(":", 1)[1] if ":" in agent_type else "text-generation"
-
-            # Manifest-based check (rich capability info)
-            existing = floor.find_agent_by_manifest(name, task_type)
-            if existing:
-                uri, manifest = existing
-                existing_name = manifest.identification.conversationalName or uri
-                caps = [kp for cap in (manifest.capabilities or []) for kp in (cap.keyphrases or [])]
-                caps_str = ", ".join(caps) if caps else "unknown"
-                renderer.show_system_event(
-                    f"[Orchestrator] Skipping spawn of '{name}' — "
-                    f"'{existing_name}' already registered (capabilities: [{caps_str}])"
-                )
-                return
-
-            # Floor-registry fallback: use FloorManager's active agents as source of truth.
-            # AgentRegistry retains kicked agents; FloorManager removes them on [KICK],
-            # so this check correctly allows re-spawning a kicked agent under the same name.
-            if floor._resolve_agent_uri_by_name(name):
-                renderer.show_system_event(
-                    f"[Orchestrator] Skipping spawn of '{name}' — agent already registered"
-                )
-                return
-
-            await _spawn_llm_agent(
-                agent_type, name, description, floor, bus, registry, renderer, settings,
-                model_ov, max_tokens_ov, timeout_ov, max_retries_ov,
-            )
-        except Exception as e:
-            logger.error("spawn_callback failed for spec '%s': %s", spec_str, e)
-            raise
-
-    floor._spawn_callback = _floor_spawn_callback
-
-    _breakout_session_count = 0
-
-    async def _floor_breakout_callback(
-        topic: str,
-        policy: "FloorPolicy",
-        max_rounds: int,
-        agent_specs: list[str],
-    ) -> "tuple[str, object]":
-        """Create temporary agents, run a breakout session, save artifact.
-
-        Returns (compact_notification, artifact_path) tuple consumed by
-        the FloorManager to set _pending_breakout_file.
-        """
-        from pathlib import Path
-        from ofp_playground.floor.breakout import (
-            run_breakout_session,
-            save_breakout_artifact,
-            build_compact_notification,
-        )
-
-        nonlocal _breakout_session_count
-
-        agents = []
-        temp_bus = MessageBus()  # placeholder — run_breakout_session creates its own bus
-
-        for spec_str in agent_specs:
-            try:
-                agent = _create_breakout_agent(spec_str, temp_bus, "breakout-temp", settings)
-                if agent:
-                    agents.append(agent)
-            except Exception as e:
-                logger.error("Breakout agent creation failed for '%s': %s", spec_str, e)
-                renderer.show_system_event(f"Breakout agent failed: {e}")
-
-        if len(agents) < 2:
-            msg = f"[Breakout: {topic}] — could not create enough agents ({len(agents)}/2 minimum)."
-            return msg, None
-
-        result = await run_breakout_session(
-            topic=topic,
-            agents=agents,
-            policy=policy,
-            parent_conversation_id=floor.conversation_id,
-            max_rounds=max_rounds,
-            parent_renderer=renderer,
-        )
-
-        # Save full session as MD artifact
-        artifact_path = save_breakout_artifact(result, floor.output.breakout)
-        renderer.show_system_event(f"[Breakout] Artifact: {artifact_path}")
-
-        # Register in MemoryStore so it appears in agent system prompts
-        _breakout_session_count += 1
-        if floor._memory_store:
-            floor._memory_store.store(
-                "tasks",
-                f"breakout_{_breakout_session_count}",
-                f"'{result.topic}' | {result.round_count} rounds | "
-                f"{', '.join(result.agent_names)} → {artifact_path}",
-            )
-
-        compact = build_compact_notification(result, artifact_path, _breakout_session_count)
-        return compact, artifact_path
-
-    floor._breakout_callback = _floor_breakout_callback
+    await _attach_floor_callbacks(floor, bus, registry, settings, renderer)
 
     tasks = [floor.run()]
 
@@ -573,6 +488,7 @@ async def _spawn_llm_agent(
     max_tokens_override: Optional[int] = None,
     timeout_override: Optional[float] = None,
     max_retries_override: int = 0,
+    web_renderer=None,
 ) -> None:
     """Spawn and register an LLM agent."""
     agent = None
@@ -745,6 +661,16 @@ async def _spawn_llm_agent(
                 api_key=api_key,
                 model=model_override or settings.defaults.music_model_google,
             )
+        elif task == "text-to-video":
+            from ofp_playground.agents.llm.google_video import GeminiVideoAgent
+            agent = GeminiVideoAgent(
+                name=name,
+                style=description,
+                bus=bus,
+                conversation_id=floor.conversation_id,
+                api_key=api_key,
+                model=model_override or settings.defaults.video_model_google,
+            )
         elif task == "orchestrator":
             from ofp_playground.agents.llm.showrunner import GoogleOrchestratorAgent
             agent = GoogleOrchestratorAgent(
@@ -768,7 +694,7 @@ async def _spawn_llm_agent(
             )
         else:
             renderer.show_system_event(
-                f"Unknown Google task: {task}. Use google for text-generation, text-to-image, image-to-text, text-to-music, orchestrator, or web-page-generation."
+                f"Unknown Google task: {task}. Use google for text-generation, text-to-image, image-to-text, text-to-music, text-to-video, orchestrator, or web-page-generation."
             )
             return
 
@@ -1009,6 +935,10 @@ async def _spawn_llm_agent(
         registry.register(agent)
         model_name = model_override or getattr(agent, "_model", "default")
         renderer.show_system_event(f"Spawned {name} ({agent_type} / {model_name}) — joining conversation...")
+        if web_renderer is not None:
+            web_renderer.add_agent(agent.speaker_uri, agent.name)
+            web_renderer.add_agent_meta(agent.speaker_uri, f"{agent_type} / {model_name}")
+            web_renderer.add_system_event(f"Spawned {name} ({agent_type} / {model_name}) — joining conversation...")
         # Pre-register the agent's queue on the bus so that any messages sent
         # immediately after spawn (e.g. [ASSIGN] directives) are not dropped.
         # agent.run() will call bus.register() again — that's a harmless no-op.
@@ -1016,6 +946,122 @@ async def _spawn_llm_agent(
         # Send OFP-compliant InviteEvent so the agent knows it joined the floor.
         await floor.invite_agent(agent.speaker_uri, getattr(agent, "_service_url", "local://agent"))
         asyncio.create_task(agent.run())
+
+
+async def _attach_floor_callbacks(
+    floor: "FloorManager",
+    bus: "MessageBus",
+    registry: "AgentRegistry",
+    settings: "Settings",
+    renderer: "TerminalRenderer",
+    web_renderer=None,
+) -> None:
+    """Attach spawn + breakout callbacks to the floor manager.
+
+    Shared by both the terminal session (_run_session) and the web session
+    (_run_web_session) so the agentic backbone behaves identically regardless
+    of which renderer is active.
+
+    renderer     — TerminalRenderer used for terminal notifications
+    web_renderer — optional GradioRenderer; if set, events also go to the web UI
+    """
+
+    def _notify(msg: str) -> None:
+        renderer.show_system_event(msg)
+        if web_renderer is not None:
+            web_renderer.add_system_event(msg)
+
+    async def _floor_spawn_callback(spec_str: str) -> None:
+        try:
+            agent_type, name, description, model_ov, max_tokens_ov, timeout_ov, max_retries_ov = _parse_agent_spec(spec_str)
+            task_type = agent_type.split(":", 1)[1] if ":" in agent_type else "text-generation"
+
+            # Manifest-based check (rich capability info)
+            existing = floor.find_agent_by_manifest(name, task_type)
+            if existing:
+                uri, manifest = existing
+                existing_name = manifest.identification.conversationalName or uri
+                caps = [kp for cap in (manifest.capabilities or []) for kp in (cap.keyphrases or [])]
+                caps_str = ", ".join(caps) if caps else "unknown"
+                _notify(
+                    f"[Orchestrator] Skipping spawn of '{name}' — "
+                    f"'{existing_name}' already registered (capabilities: [{caps_str}])"
+                )
+                return
+
+            # Floor-registry fallback: use FloorManager's active agents as source of truth.
+            if floor._resolve_agent_uri_by_name(name):
+                _notify(f"[Orchestrator] Skipping spawn of '{name}' — agent already registered")
+                return
+
+            await _spawn_llm_agent(
+                agent_type, name, description, floor, bus, registry, renderer, settings,
+                model_ov, max_tokens_ov, timeout_ov, max_retries_ov,
+                web_renderer=web_renderer,
+            )
+        except Exception as e:
+            logger.error("spawn_callback failed for spec '%s': %s", spec_str, e)
+            raise
+
+    floor._spawn_callback = _floor_spawn_callback
+
+    _breakout_session_count = 0
+
+    async def _floor_breakout_callback(
+        topic: str,
+        policy: "FloorPolicy",
+        max_rounds: int,
+        agent_specs: list[str],
+    ) -> "tuple[str, object]":
+        from ofp_playground.floor.breakout import (
+            run_breakout_session,
+            save_breakout_artifact,
+            build_compact_notification,
+        )
+
+        nonlocal _breakout_session_count
+
+        agents = []
+        temp_bus = MessageBus()  # placeholder — run_breakout_session creates its own bus
+
+        for spec_str in agent_specs:
+            try:
+                agent = _create_breakout_agent(spec_str, temp_bus, "breakout-temp", settings)
+                if agent:
+                    agents.append(agent)
+            except Exception as e:
+                logger.error("Breakout agent creation failed for '%s': %s", spec_str, e)
+                _notify(f"Breakout agent failed: {e}")
+
+        if len(agents) < 2:
+            msg = f"[Breakout: {topic}] — could not create enough agents ({len(agents)}/2 minimum)."
+            return msg, None
+
+        result = await run_breakout_session(
+            topic=topic,
+            agents=agents,
+            policy=policy,
+            parent_conversation_id=floor.conversation_id,
+            max_rounds=max_rounds,
+            parent_renderer=renderer,
+        )
+
+        artifact_path = save_breakout_artifact(result, floor.output.breakout)
+        _notify(f"[Breakout] Artifact: {artifact_path}")
+
+        _breakout_session_count += 1
+        if floor._memory_store:
+            floor._memory_store.store(
+                "tasks",
+                f"breakout_{_breakout_session_count}",
+                f"'{result.topic}' | {result.round_count} rounds | "
+                f"{', '.join(result.agent_names)} → {artifact_path}",
+            )
+
+        compact = build_compact_notification(result, artifact_path, _breakout_session_count)
+        return compact, artifact_path
+
+    floor._breakout_callback = _floor_breakout_callback
 
 
 @click.group()
@@ -1026,10 +1072,7 @@ def main(ctx: click.Context, verbose: bool):
     _load_dotenv()
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
-    if verbose:
-        logging.basicConfig(level=logging.DEBUG)
-    else:
-        logging.basicConfig(level=logging.WARNING)
+    _configure_logging(verbose)
 
 
 @main.command()
@@ -1080,17 +1123,24 @@ def main(ctx: click.Context, verbose: bool):
     default=False,
     help="Show floor grant/request system events (hidden by default)",
 )
+@click.option(
+    "--verbose", "-v",
+    is_flag=True,
+    default=False,
+    help="Enable debug logging",
+)
 @click.pass_context
 def start(ctx: click.Context, policy: str, agents: tuple, remotes: tuple,
           no_human: bool, topic: Optional[str], max_turns: Optional[int],
-          human_name: str, show_floor_events: bool):
+          human_name: str, show_floor_events: bool, verbose: bool):
     """Start an interactive OFP conversation session.
 
     Agent spec formats (both supported):\n
       hf:Name:System prompt.:model-id\n
       -provider hf -name Name -system System prompt. -model model-id
     """
-    verbose = ctx.obj.get("verbose", False)
+    verbose = verbose or ctx.obj.get("verbose", False)
+    _configure_logging(verbose)
     settings = Settings.load()
     floor_policy = _parse_policy(policy)
 
@@ -1127,18 +1177,19 @@ def start(ctx: click.Context, policy: str, agents: tuple, remotes: tuple,
 @click.option("--port", default=7860, type=int, help="Port to listen on (default: 7860)")
 @click.option("--share", is_flag=True, default=False,
               help="Create a public Gradio share link")
+@click.option("--verbose", "-v", is_flag=True, default=False,
+              help="Enable debug logging")
 @click.pass_context
 def web(ctx: click.Context, policy: str, agents: tuple, topic: Optional[str],
         no_human: bool, max_turns: Optional[int], human_name: str,
-        host: str, port: int, share: bool):
+        host: str, port: int, share: bool, verbose: bool):
     """Start the OFP Playground Gradio web UI.
 
     Opens a browser-based chat interface. Use --no-human to watch agents
     talk autonomously.
     """
-    verbose = ctx.obj.get("verbose", False)
-    if verbose:
-        logging.basicConfig(level=logging.DEBUG)
+    verbose = verbose or ctx.obj.get("verbose", False)
+    _configure_logging(verbose)
     _load_dotenv()
     settings = Settings.load()
     floor_policy = _parse_policy(policy)
@@ -1177,6 +1228,15 @@ async def _run_web_session(
     floor = FloorManager(bus, policy=policy, renderer=None)
     registry = AgentRegistry()
 
+    # Create the Gradio renderer early so spawn events appear in the web UI
+    from ofp_playground.renderer.gradio_ui import GradioRenderer
+    _human_uris: set[str] = set()
+    web_renderer = GradioRenderer(agent_names={}, human_uris=_human_uris)
+    web_renderer.add_system_event(
+        f"Running in autonomous mode" if no_human else "Interactive mode"
+    )
+    web_renderer.add_system_event(f"Conversation started (ID: {floor.conversation_id[:8]}...)")
+
     human = None
     tasks = [floor.run()]
     agent_display_names: list[str] = []
@@ -1192,15 +1252,21 @@ async def _run_web_session(
         registry.register(human)
         tasks.append(human.run())
         agent_display_names.append(human_name)
+        _human_uris.add(human.speaker_uri)
+        web_renderer.add_agent(human.speaker_uri, human_name)
+
+    # Attach spawn + breakout callbacks (same backbone as terminal session)
+    term_renderer = TerminalRenderer(console, show_floor_events=False)
+    await _attach_floor_callbacks(floor, bus, registry, settings, term_renderer, web_renderer=web_renderer)
 
     # Spawn pre-configured LLM agents
-    term_renderer = TerminalRenderer(console, show_floor_events=False)
     for spec in agent_specs:
         try:
             agent_type, name, description, model_ov, max_tokens_ov, *_ = _parse_agent_spec(spec)
             await _spawn_llm_agent(
                 agent_type, name, description, floor, bus, registry,
                 term_renderer, settings, model_ov, max_tokens_ov,
+                web_renderer=web_renderer,
             )
             agent_display_names.append(name)
         except Exception as e:
@@ -1211,7 +1277,16 @@ async def _run_web_session(
             await asyncio.sleep(1.5)
             if topic:
                 term_renderer.show_system_event(f'Topic: "{topic}"')
+                web_renderer.add_system_event(f'Topic: "{topic}"')
+                floor._memory_store.seed_goal(topic)
                 await _seed_topic(topic, floor, bus)
+                # Grant floor to orchestrator/director — they never self-request
+                if floor._orchestrator_uri:
+                    await asyncio.sleep(0.2)
+                    await floor.grant_to(floor._orchestrator_uri)
+                elif floor._director_uri and not floor._showrunner_uri:
+                    await asyncio.sleep(0.2)
+                    await floor.grant_to(floor._director_uri)
             if max_turns:
                 while floor.history.__len__() < max_turns:
                     await asyncio.sleep(2.0)
@@ -1235,6 +1310,7 @@ async def _run_web_session(
             host=host,
             port=port,
             share=share,
+            gradio_renderer=web_renderer,
         )
         console.print(f"[green]Web UI ready → http://{host}:{port}[/green]")
 
@@ -1268,7 +1344,7 @@ def agents():
         "\n"
         "  [bold]OpenAI generative tasks (-type):[/bold]\n"
         "    Text-Generation          — chat/text LLM (default: gpt-5.4-nano)\n"
-        "    Text-to-Image            — generate images via Responses API (default: gpt-4o)\n"
+        "    Text-to-Image            — generate images via Responses API (default: gpt-5)\n"
         "    Image-to-Text            — analyze images via vision (default: gpt-4o-mini)\n"
         "\n"
         "  [bold]Google generative tasks (-type):[/bold]\n"

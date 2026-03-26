@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # OFP Playground — Illustrated Story Showcase | Policy: showrunner_driven — Director orchestrates full pipeline
 # Usage: bash examples/showcase.sh [TOPIC]
-# Keys: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, HF_API_KEY
+# Keys: hf_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, HF_API_KEY
 
 TOPIC="${1:-an illustrated adventure story about unlikely friends discovering a hidden magic}"
 
@@ -34,23 +34,23 @@ and build in sequential mode. Topic: paste the full TOPIC verbatim. Policy: sequ
     System: You are the story's iron will. You decide what must happen, what cannot be cut, what the
     story owes its reader.
 
-  Agent 3 — name: CriticalVoice, provider: anthropic
+  Agent 3 — name: CriticalVoice, provider: hf
     System: You are the story's editor and ironist. You see through every cheap trick, every lazy beat,
     every moment that settles for adequate.
 
-  Agent 4 — name: DarkHumor, provider: anthropic
+  Agent 4 — name: DarkHumor, provider: hf
     System: You find the absurdist undercurrent in everything. Behind every warm story is a darker,
     funnier thing trying to get out. You pull it to the surface: the irony, the unexpected horror in
     the mundane, the moment where the joke goes one beat further than comfortable.
 
-  Agent 5 — name: EmotionalDepth, provider: anthropic
+  Agent 5 — name: EmotionalDepth, provider: hf
     System: You excavate the subtext. Every chapter has a surface — what happens — and a depth —
     what it means. You find loyalty, grief, fear of loss, the exhaustion of protection, the particular
     loneliness of being the one who always knows what is coming. You make the story matter to people
     who are no longer children. You argue for the moments that hit below the waterline.
     You are not sentimental. You are rigorous about feeling.
 
-  Agent 6 — name: NarrativeArchitect, provider: anthropic
+  Agent 6 — name: NarrativeArchitect, provider: hf
     System: You are the structural engineer. You evaluate arc shape, chapter payoffs, escalation curve,
     the distribution of weight across N(example:8) chapters. You warn when too much happens too early, when the
     ending has not earned its landing, when a chapter is spinning wheels. You propose solutions, not
@@ -106,12 +106,12 @@ For chapters 1 through N:
   STEP C — CUTSCENE (optional, minimum 3 across all chapters):
     If something in the chapter sparks a dark tangent, call create_breakout_session.
     Topic: 'CUTSCENE: [specific dark absurdist premise]'. Policy: round_robin. Max rounds: 3.
-      Agent 1 — name: Sarcast, provider: anthropic
+      Agent 1 — name: Sarcast, provider: hf
         System: You are a dark-comedy cutaway writer in the style of Family Guy. Start every cutaway
         with 'This reminds me of the time...' then describe a brief, completely unrelated absurd
         scenario. Dark humour, subverted expectations, anti-climax. No slurs. No sexual content.
         No punching down at vulnerable groups. Stop there.
-      Agent 2 — name: SG, provider: anthropic
+      Agent 2 — name: SG, provider: hf
         System: You are an acerbic, hyper-articulate intellectual with contempt for sentimentality and
         a gift for making everything darker and more precise. Take Sarcast's cutaway and escalate
         it: add a twist, a callback, or a final line that lands harder than the setup deserved.
@@ -137,7 +137,7 @@ and write your WEB BUILD PLAN:
   TONE: [how builders should approach their pages — the register, what the reader relationship feels like]
   INDEX FEEL: [what opening the book should feel like — first impression, what the reader should feel
     before they click chapter 1]
-  AUDIO MOOD: [specific guidance for Composer — tempo, instrumentation feel, emotional target, loop character]
+  AUDIO MOOD: [specific guidance for Composer — tempo, instrumentation feel, emotional target, loop character] it is outputted to .wav format
   CHAPTER HIGHLIGHTS: [for each chapter: one key moment to surface in the page design, dominant emotional
     tone, visual focus — what should the reader remember about this chapter's page]
 
@@ -392,8 +392,8 @@ ofp-playground start \
   --no-human \
   --policy showrunner_driven \
   --max-turns 600 \
-  --agent "anthropic:orchestrator:Director:${DIRECTOR_MISSION}" \
-  --agent "anthropic:StoryWriter:${STORY_WRITER_PROMPT}:claude-sonnet-4-6" \
+  --agent "hf:orchestrator:Director:${DIRECTOR_MISSION}" \
+  --agent "hf:StoryWriter:${STORY_WRITER_PROMPT}" \
   --agent "hf:text-to-image:NanoBananPainter:${NANO_BANAN_PAINTER_PROMPT}" \
   --agent "google:text-to-music:Composer:${COMPOSER_PROMPT}" \
   --agent "hf:web-page-generation:ChapterBuilder:${CHAPTER_BUILDER_PROMPT}:moonshotai/Kimi-K2.5" \

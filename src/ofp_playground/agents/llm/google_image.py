@@ -18,7 +18,13 @@ logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = Path("ofp-images")
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
-FALLBACK_IMAGE_MODEL = "gemini-2.5-flash-image"
+# Fallback chain: Nano Banana 2 → Nano Banana Pro → Nano Banana
+IMAGE_MODELS = [
+    "gemini-3.1-flash-image-preview",  # Nano Banana 2
+    "gemini-3-pro-image-preview",       # Nano Banana Pro
+    "gemini-2.5-flash-image",           # Nano Banana
+]
+MAX_RETRIES_PER_MODEL = 4
 DEFAULT_VISION_MODEL = "gemini-3-flash-preview"
 GEMINI_IMAGE_URI_TEMPLATE = "tag:ofp-playground.local,2025:gimage-{name}"
 GEMINI_VISION_URI_TEMPLATE = "tag:ofp-playground.local,2025:gvision-{name}"
@@ -102,10 +108,10 @@ class GeminiImageAgent(BasePlaygroundAgent):
         return f"{self._style}, {scene}"
 
     async def _generate_image(self, prompt: str) -> Optional[tuple[Path, str]]:
-        """Generate image, falling back to FALLBACK_IMAGE_MODEL on 503. Returns (path, model_used)."""
-        loop = asyncio.get_event_loop()
+        """Generate image with retries across all fallback models. Returns (path, model_used)."""
+        loop = asyncio.get_running_loop()
 
-        def _call(model: str) -> bytes:
+        def _call(model: str) -> tuple[Optional[Path], str]:
             from google.genai import types
             client = self._get_client()
             response = client.models.generate_content(
@@ -113,33 +119,67 @@ class GeminiImageAgent(BasePlaygroundAgent):
                 contents=[prompt],
                 config=types.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"]),
             )
-            for part in response.parts:
+            text_parts: list[str] = []
+            for part in (response.parts or []):
                 if part.inline_data is not None:
-                    return part.inline_data.data
-            raise RuntimeError("Gemini image generation returned no image data")
+                    image = part.as_image()
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    save_path = self._output_dir / f"{ts}_{self._name.lower()}.png"
+                    image.save(str(save_path))
+                    return save_path, ""
+                if getattr(part, "text", None):
+                    text_parts.append(part.text)
+            # Dig into why no image was returned
+            debug: list[str] = []
+            pf = getattr(response, "prompt_feedback", None)
+            if pf:
+                debug.append(f"prompt_feedback={pf}")
+            for i, cand in enumerate(getattr(response, "candidates", []) or []):
+                fr = getattr(cand, "finish_reason", None)
+                fm = getattr(cand, "finish_message", None)
+                n_parts = len(getattr(getattr(cand, "content", None), "parts", None) or [])
+                debug.append(f"candidate[{i}] finish_reason={fr} finish_message={fm} parts={n_parts}")
+            if not debug and not text_parts:
+                debug.append("<empty response — no candidates, no parts>")
+            return None, " | ".join(text_parts + debug)
 
-        models_to_try = [self._model]
-        if self._model != FALLBACK_IMAGE_MODEL:
-            models_to_try.append(FALLBACK_IMAGE_MODEL)
+        # Requested model first, then any remaining IMAGE_MODELS not yet in list
+        ordered_models = [self._model] + [m for m in IMAGE_MODELS if m != self._model]
 
-        last_error: Optional[Exception] = None
-        for model in models_to_try:
-            try:
-                image_bytes = await loop.run_in_executor(None, _call, model)
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                path = self._output_dir / f"{ts}_{self._name.lower()}.png"
-                path.write_bytes(image_bytes)
-                return path, model
-            except Exception as e:
-                err_str = str(e)
-                if "503" in err_str or "UNAVAILABLE" in err_str:
-                    logger.warning("[%s] %s unavailable (503), trying fallback %s", self._name, model, FALLBACK_IMAGE_MODEL)
-                    last_error = e
-                    continue
-                logger.error("[%s] Gemini image generation error: %s", self._name, e)
-                return None
+        for model in ordered_models:
+            for attempt in range(1, MAX_RETRIES_PER_MODEL + 1):
+                try:
+                    path, refusal_text = await loop.run_in_executor(None, _call, model)
+                    if path is not None:
+                        return path, model
+                    logger.warning(
+                        "[%s] No image from %s (attempt %d/%d). Model said: %s",
+                        self._name, model, attempt, MAX_RETRIES_PER_MODEL,
+                        refusal_text[:300] if refusal_text else "<no text in response>",
+                    )
+                    # IMAGE_SAFETY = content blocked — retrying same model won't help
+                    if "IMAGE_SAFETY" in refusal_text:
+                        logger.warning("[%s] %s blocked by safety filter, skipping to next model", self._name, model)
+                        break
+                except Exception as e:
+                    err_str = str(e)
+                    if "503" in err_str or "UNAVAILABLE" in err_str or "400" in err_str or "invalid" in err_str.lower():
+                        logger.warning(
+                            "[%s] %s non-retryable error (%s), skipping to next model",
+                            self._name, model, err_str[:120],
+                        )
+                        break  # don't retry this model
+                    logger.warning(
+                        "[%s] Gemini error on %s attempt %d/%d: %s",
+                        self._name, model, attempt, MAX_RETRIES_PER_MODEL, e,
+                    )
+                if attempt < MAX_RETRIES_PER_MODEL:
+                    # Exponential backoff: 1s, 2s, 4s — IMAGE_OTHER is transient overload
+                    delay = 1.0 * (2 ** (attempt - 1))
+                    logger.info("[%s] Waiting %.0fs before retry %d…", self._name, delay, attempt + 1)
+                    await asyncio.sleep(delay)
 
-        logger.error("[%s] Gemini image generation error (all models failed): %s", self._name, last_error)
+        logger.error("[%s] All Gemini image models exhausted with no result", self._name)
         return None
 
     async def _handle_utterance(self, envelope: Envelope) -> None:
@@ -336,7 +376,7 @@ class GeminiVisionAgent(BaseLLMAgent):
             logger.error("[%s] Could not read image %s: %s", self._name, path, e)
             return None
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         client = self._get_client()
         system = self._build_system_prompt(participants)
 
