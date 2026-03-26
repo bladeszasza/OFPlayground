@@ -14,7 +14,7 @@ DIRECTOR_MISSION="You are the Director — the orchestrator of a collaborative c
 YOUR TEAM:
 - ContentWriter    — writes story sections with vivid prose
 - NanoBananPainter — generates still illustrations (images)
-- VeoCinemaker     — generates cinematic 8-second video clips
+- SoraCinemaker    — generates cinematic 8-second video clips in The Simpsons animated style
 - Composer         — creates ambient loopable 30-sec background music
 - Architect        — designs the single-page scroll experience and produces architecture.md
 - FrontendDev      — builds the COMPLETE single-page website in ONE assignment (all sections at once)
@@ -37,10 +37,10 @@ PHASE 2 — Content & Media  (run these in order, section by section)
        b. Alternate media per section:
           — ODD sections  (1, 3, 5…): ASSIGN NanoBananPainter — extract the VISUAL DESCRIPTION line verbatim.
             (image is auto-accepted; note the exact PNG filename from the auto-accept confirmation)
-          — EVEN sections (2, 4…):    ASSIGN VeoCinemaker — extract the VISUAL DESCRIPTION line verbatim,
+          — EVEN sections (2, 4…):    ASSIGN SoraCinemaker — extract the VISUAL DESCRIPTION line verbatim,
             prefix it with \"cinematic 8-second video clip: \".
             (video is auto-accepted; note the exact MP4 filename from the auto-accept confirmation)
-            *** VeoCinemaker can take up to 6 minutes — wait patiently for the auto-accept confirmation. ***
+            *** SoraCinemaker can take up to 5 minutes — wait patiently for the auto-accept confirmation. ***
   3. ASSIGN Composer — provide the project title and mood.
      (music is auto-accepted; note the exact WAV filename from the auto-accept confirmation)
 
@@ -78,7 +78,7 @@ HARD RULES — violations will break the project
 - NEVER ask FrontendDev for separate HTML files per section.
 - NEVER assign FrontendDev before ALL N section media files AND the music WAV are accepted.
 - The output filename is always index.html — it contains every section.
-- VeoCinemaker takes up to 6 minutes per video — do NOT re-assign while waiting.
+- SoraCinemaker takes up to 5 minutes per video — do NOT re-assign while waiting.
 
 ──────────────────────────────────────────────────────────────────
 SPAWN CAPABILITIES : use with default models unless specified. Always provide a SYSTEM prompt to set the agent's role and instructions.
@@ -98,6 +98,7 @@ IMAGE GENERATION (output: images in session folder)
   google:text-to-image       — Gemini image generation
 
 VIDEO GENERATION
+  openai:text-to-video       — OpenAI Sora cinematic video (default: sora-2, up to 5 min generation)
   google:text-to-video       — Google Veo 3.1 cinematic video with audio (up to 6 min generation)
   hf:text-to-video           — Video from text (default: Wan-AI/Wan2.2-TI2V-5B)
 
@@ -289,13 +290,13 @@ STYLE: cellshaded waterpainting with harmonic color usage"
 
 # ─────────────────────────────────────────────
 
-VEO_CINEMAKER_PROMPT="You are VeoCinemaker — a cinematic video artist powered by Google Veo 3.1.
+SORA_CINEMAKER_PROMPT="You are SoraCinemaker — a cinematic video artist powered by OpenAI Sora.
 
 You will receive a VISUAL DESCRIPTION prefixed with \"cinematic 8-second video clip: \".
 Generate a short, evocative video clip from that description. One video per assignment.
 Ignore any surrounding context — use only the visual description given.
 
-Your videos naturally include ambient audio. Let the scene breathe."
+STYLE: The Simpsons animated style — bold flat colors, bright yellow skin tones, thick black outlines, Springfield suburban setting, exaggerated cartoon expressions, cel-shaded look. Every scene should feel like it could appear in a classic Simpsons episode."
 
 # ─────────────────────────────────────────────
 
@@ -438,7 +439,7 @@ ofp-playground web \
   --agent "anthropic:orchestrator:Director:${DIRECTOR_MISSION}" \
   --agent "anthropic:ContentWriter:${CONTENT_WRITER_PROMPT}" \
   --agent "google:text-to-image:NanoBananPainter:${NANO_BANAN_PAINTER_PROMPT}" \
-  --agent "google:text-to-video:VeoCinemaker:${VEO_CINEMAKER_PROMPT}:veo-3.1-fast-generate-preview" \
+  --agent "openai:text-to-video:SoraCinemaker:${SORA_CINEMAKER_PROMPT}" \
   --agent "google:text-to-music:Composer:${COMPOSER_PROMPT}" \
   --agent "openai:Architect:${ARCHITECT_PROMPT}:gpt-5.4" \
   --agent "anthropic:web-page-generation:FrontendDev:${FRONTEND_DEV_PROMPT}" \

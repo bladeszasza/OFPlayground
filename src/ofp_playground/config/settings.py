@@ -38,6 +38,7 @@ class DefaultsConfig:
     vision_model_anthropic: str = "claude-haiku-4-5-20251001"       # Claude vision (image-to-text)
     llm_model_openai: str = "gpt-5.4-nano"                          # smallest GPT-5.4
     image_model_openai: str = "gpt-5"                               # model used with image_generation tool
+    video_model_openai: str = "sora-2"                              # Sora video generation
     vision_model_openai: str = "gpt-4o-mini"                        # OpenAI vision (image-to-text)
     llm_model_google: str = "gemini-3.1-flash-lite-preview"          # default Gemini text model
     image_model_google: str = "gemini-3.1-flash-image-preview"      # Gemini image generation (Nano Banana)
@@ -109,6 +110,7 @@ class Settings:
                 "vision_model_anthropic": self.defaults.vision_model_anthropic,
                 "llm_model_openai": self.defaults.llm_model_openai,
                 "image_model_openai": self.defaults.image_model_openai,
+                "video_model_openai": self.defaults.video_model_openai,
                 "vision_model_openai": self.defaults.vision_model_openai,
                 "llm_model_google": self.defaults.llm_model_google,
                 "image_model_google": self.defaults.image_model_google,

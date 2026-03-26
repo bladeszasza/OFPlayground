@@ -586,6 +586,16 @@ async def _spawn_llm_agent(
                 api_key=api_key,
                 model=model_override or settings.defaults.vision_model_openai,
             )
+        elif task == "text-to-video":
+            from ofp_playground.agents.llm.openai_video import SoraVideoAgent
+            agent = SoraVideoAgent(
+                name=name,
+                style=description,
+                bus=bus,
+                conversation_id=floor.conversation_id,
+                api_key=api_key,
+                model=model_override or settings.defaults.video_model_openai,
+            )
         elif task == "orchestrator":
             from ofp_playground.agents.llm.showrunner import OpenAIOrchestratorAgent
             agent = OpenAIOrchestratorAgent(
@@ -609,7 +619,7 @@ async def _spawn_llm_agent(
             )
         else:
             renderer.show_system_event(
-                f"Unknown OpenAI task: {task}. Use OpenAI for text-generation, text-to-image, image-to-text, orchestrator, or web-page-generation."
+                f"Unknown OpenAI task: {task}. Use OpenAI for text-generation, text-to-image, text-to-video, image-to-text, orchestrator, or web-page-generation."
             )
             return
 
