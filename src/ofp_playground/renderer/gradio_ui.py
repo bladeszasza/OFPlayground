@@ -352,8 +352,6 @@ def launch_web_session(
 
     with gr.Blocks(
         title="OFP Playground",
-        theme=gr.themes.Soft(),
-        css=_CUSTOM_CSS,
         fill_width=True,
     ) as demo:
         with gr.Row(equal_height=False):
@@ -367,8 +365,6 @@ def launch_web_session(
                 chatbot = gr.Chatbot(
                     label="Conversation",
                     height=620,
-                    show_copy_button=True,
-                    bubble_full_width=False,
                     elem_classes=["chatbot-container"],
                 )
 
@@ -440,6 +436,8 @@ def launch_web_session(
         server_port=port,
         share=share,
         prevent_thread_lock=True,
+        theme=gr.themes.Soft(),
+        css=_CUSTOM_CSS,
         allowed_paths=[
             str(result_root),
             str(legacy_images),
