@@ -163,7 +163,7 @@ async def test_files_saved_to_ofp_code(tmp_path):
 
     agent.send_private_utterance = AsyncMock()
 
-    with patch("ofp_playground.agents.llm.codex.AsyncOpenAI", return_value=mock_client):
+    with patch("openai.AsyncOpenAI", return_value=mock_client):
         _, saved = await agent._run_openai_coding_loop("test context")
 
     assert len(saved) == 1

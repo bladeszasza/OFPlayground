@@ -7,7 +7,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from openai import AsyncOpenAI
 from openfloor import Envelope
 
 from ofp_playground.agents.llm.base import BaseLLMAgent
@@ -130,6 +129,7 @@ class CodingAgent(BaseLLMAgent):
         NOTE: event attribute paths (item.outputs, output.files, etc.) reflect the
         openai SDK as of 2026-03. Verify against sdk changelog if the API changes.
         """
+        from openai import AsyncOpenAI
         client = AsyncOpenAI(api_key=self._api_key)
         output_text = ""
         file_ids: list[tuple[str, str]] = []  # (file_id, filename)
@@ -224,4 +224,5 @@ class CodingAgent(BaseLLMAgent):
             await self._send_final_and_yield(f"Coding task failed: {str(e)[:200]}")
         finally:
             self._has_floor = False
+            self._pending_floor_request = False
             self._task_directive = ""
