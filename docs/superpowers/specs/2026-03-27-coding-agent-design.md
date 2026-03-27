@@ -224,6 +224,65 @@ All four provider `else` branches in `cli.py` update their error message strings
 
 ---
 
+## Example Scripts
+
+### `examples/sequential_code_review.sh` — update
+
+Add `CodingAgent` as the final step in the pipeline. After the three reviewers speak, the human can request a fix; `CodingAgent` holds the floor and implements it via code_interpreter.
+
+**Change**: add one agent line and update the comment header:
+
+```bash
+--agent "openai:code-generation:CodeFixer:You are CodeFixer, a senior engineer.
+You receive consolidated code review findings (security, performance, style).
+Implement ALL suggested fixes in one shot. Output the corrected file via code_interpreter.
+Do not explain — just produce the fixed file."
+```
+
+The floor policy stays `sequential`. `CodeFixer` naturally requests the floor after the reviewers have spoken and the human has acknowledged. It holds the floor through its coding loop, sending private progress utterances, then yields with the fixed file path in its final utterance.
+
+---
+
+### `examples/breakout_code_review.sh` — new file (reimagined)
+
+A `showrunner_driven` floor where a Director orchestrates a BREAKOUT review panel, then delegates the fix to `CodingAgent`.
+
+**Flow**:
+```
+Human submits code snippet
+        ↓
+Director → [BREAKOUT policy=sequential max_rounds=3 topic=Code review findings]
+           [BREAKOUT_AGENT -provider anthropic -name SecurityReviewer -system "..."]
+           [BREAKOUT_AGENT -provider anthropic -name PerformanceReviewer -system "..."]
+           [BREAKOUT_AGENT -provider openai -name StyleReviewer -system "..."]
+        ↓
+Breakout summary (~200 words) injected into Director's next context
+        ↓
+Director → [ASSIGN CodeFixer]: <full snippet> + <breakout summary>
+        ↓
+CodingAgent holds floor, runs code_interpreter, implements all fixes
+Sends private progress utterances ("Applying security patch...", "Running tests...")
+Final utterance: "Fixed file saved: ofp-code/<ts>_codefixer_solution.py"
+        ↓
+Director → [ACCEPT]
+           [TASK_COMPLETE]
+```
+
+**Agents**:
+| Agent | Provider | Type |
+|---|---|---|
+| Director | anthropic | orchestrator |
+| SecurityReviewer | anthropic | text-generation (breakout only) |
+| PerformanceReviewer | anthropic | text-generation (breakout only) |
+| StyleReviewer | openai | text-generation (breakout only) |
+| CodeFixer | openai | code-generation |
+
+The Director's mission prompt includes the breakout syntax, the ASSIGN + ACCEPT pattern, and the resilience pattern (`[REJECT]` → `[SKIP]` on repeated failure).
+
+**Key difference from sequential version**: reviewers never hold the main floor — the breakout is isolated, produces a compact summary, and the main floor is used exclusively for Director ↔ CodeFixer exchange. Cleaner, faster, no cross-talk noise in the main conversation.
+
+---
+
 ## Invariants / Hard Rules
 
 - `CodingAgent` never calls `request_floor()` — it only responds to explicit `grantFloor` from the FloorManager (same as `web_page.py`)
