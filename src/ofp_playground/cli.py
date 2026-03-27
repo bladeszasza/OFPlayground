@@ -534,9 +534,9 @@ async def _spawn_llm_agent(
                 settings=settings,
             )
             floor.register_orchestrator(agent.speaker_uri)
-        elif task in ("web-page", "web-page-generation", "web-showcase"):
-            from ofp_playground.agents.llm.web_page import WebPageAgent
-            agent = WebPageAgent(
+        elif task == "code-generation":
+            from ofp_playground.agents.llm.codex import CodingAgent
+            agent = CodingAgent(
                 name=name, synopsis=description, bus=bus,
                 conversation_id=floor.conversation_id,
                 api_key=api_key, provider="anthropic",
@@ -544,7 +544,7 @@ async def _spawn_llm_agent(
             )
         else:
             renderer.show_system_event(
-                f"Unknown Anthropic task: {task}. Use anthropic for text-generation, image-to-text, orchestrator, or web-page-generation."
+                f"Unknown Anthropic task: {task}. Use anthropic for text-generation, image-to-text, orchestrator, or code-generation."
             )
             return
 
@@ -609,9 +609,9 @@ async def _spawn_llm_agent(
                 settings=settings,
             )
             floor.register_orchestrator(agent.speaker_uri)
-        elif task in ("web-page", "web-page-generation", "web-showcase"):
-            from ofp_playground.agents.llm.web_page import WebPageAgent
-            agent = WebPageAgent(
+        elif task == "code-generation":
+            from ofp_playground.agents.llm.codex import CodingAgent
+            agent = CodingAgent(
                 name=name, synopsis=description, bus=bus,
                 conversation_id=floor.conversation_id,
                 api_key=api_key, provider="openai",
@@ -619,7 +619,7 @@ async def _spawn_llm_agent(
             )
         else:
             renderer.show_system_event(
-                f"Unknown OpenAI task: {task}. Use OpenAI for text-generation, text-to-image, text-to-video, image-to-text, orchestrator, or web-page-generation."
+                f"Unknown OpenAI task: {task}. Use OpenAI for text-generation, text-to-image, text-to-video, image-to-text, orchestrator, or code-generation."
             )
             return
 
@@ -694,9 +694,9 @@ async def _spawn_llm_agent(
                 settings=settings,
             )
             floor.register_orchestrator(agent.speaker_uri)
-        elif task in ("web-page", "web-page-generation", "web-showcase"):
-            from ofp_playground.agents.llm.web_page import WebPageAgent
-            agent = WebPageAgent(
+        elif task == "code-generation":
+            from ofp_playground.agents.llm.codex import CodingAgent
+            agent = CodingAgent(
                 name=name, synopsis=description, bus=bus,
                 conversation_id=floor.conversation_id,
                 api_key=api_key, provider="google",
@@ -704,7 +704,7 @@ async def _spawn_llm_agent(
             )
         else:
             renderer.show_system_event(
-                f"Unknown Google task: {task}. Use google for text-generation, text-to-image, image-to-text, text-to-music, text-to-video, orchestrator, or web-page-generation."
+                f"Unknown Google task: {task}. Use google for text-generation, text-to-image, image-to-text, text-to-music, text-to-video, orchestrator, or code-generation."
             )
             return
 
@@ -860,9 +860,9 @@ async def _spawn_llm_agent(
                 settings=settings,
             )
             floor.register_orchestrator(agent.speaker_uri)
-        elif task in ("web-page", "web-page-generation", "web-showcase"):
-            from ofp_playground.agents.llm.web_page import WebPageAgent
-            agent = WebPageAgent(
+        elif task == "code-generation":
+            from ofp_playground.agents.llm.codex import CodingAgent
+            agent = CodingAgent(
                 name=name, synopsis=description, bus=bus,
                 conversation_id=floor.conversation_id,
                 api_key=api_key, provider="hf",
@@ -927,7 +927,7 @@ async def _spawn_llm_agent(
                 agent._output_dir = out.videos
             elif task in ("text-to-music",):
                 agent._output_dir = out.music
-            elif task in ("web-page", "web-page-generation", "web-showcase"):
+            elif task == "code-generation":
                 agent._output_dir = out.web
             else:
                 agent._output_dir = out.root
