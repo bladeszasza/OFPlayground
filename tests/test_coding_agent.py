@@ -83,6 +83,8 @@ async def test_directive_parsing(tmp_path):
         await agent._handle_utterance(envelope)
         mock_rf.assert_not_called()
 
+    # _task_directive stores the full raw directive text (incl. "[DIRECTIVE for Coder]:" prefix),
+    # mirroring web_page.py's _page_directive pattern — NOT just the parsed instruction.
     assert "DIRECTIVE for Coder" in agent._task_directive
 
 
@@ -119,10 +121,13 @@ async def test_final_envelope_bundles_yield(tmp_path):
     agent._bus.send = AsyncMock(side_effect=lambda env: sent.append(env))
     await agent._send_final_and_yield("Task complete.")
     assert len(sent) == 1
+    assert len(sent[0].events) == 2
     # UtteranceEvent has no eventType attr; Event("yieldFloor") does
     event_type_values = [getattr(e, "eventType", "") for e in sent[0].events]
     assert "yieldFloor" in event_type_values
-    assert len(sent[0].events) == 2
+    # OFP: utterance must precede yieldFloor in bundled envelope
+    assert event_type_values[0] != "yieldFloor"  # first event is the utterance
+    assert event_type_values[1] == "yieldFloor"  # second event is the yield
 
 
 @pytest.mark.asyncio
@@ -147,7 +152,10 @@ async def test_files_saved_to_ofp_code(tmp_path):
     mock_stream = AsyncMock()
     mock_stream.__aenter__ = AsyncMock(return_value=mock_stream)
     mock_stream.__aexit__ = AsyncMock(return_value=False)
-    mock_stream.__aiter__ = MagicMock(return_value=iter([progress_event, file_done_event]))
+    async def _events():
+        for e in [progress_event, file_done_event]:
+            yield e
+    mock_stream.__aiter__ = _events().__aiter__
     mock_stream.get_final_response = AsyncMock(return_value=mock_final)
 
     mock_file_content = MagicMock(content=fake_bytes)
