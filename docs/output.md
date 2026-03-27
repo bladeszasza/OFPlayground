@@ -15,10 +15,8 @@ result/
     │   └── 20260324_112610_animator.mp4
     ├── music/                        ← generated audio (WAV)
     │   └── 20260324_112620_composer.wav
-    ├── web/                          ← HTML pages
-    │   ├── 20260324_112630_webshowcase.html
-    │   ├── composer.wav              ← copied media sibling files
-    │   └── animator.mp4
+    ├── code/                         ← generated code files (CodingAgent)
+    │   └── 20260324_112630_codefixer_solution.py
     ├── breakout/                     ← breakout session transcripts (MD)
     │   └── 20260324_112525_scene_development.md
     ├── manuscript.txt                ← accumulated accepted outputs
@@ -114,7 +112,7 @@ output.root      # Path("result/20260324_112523_a1b2c3d4")
 output.images    # Path("result/20260324_112523_a1b2c3d4/images")
 output.videos    # Path("result/20260324_112523_a1b2c3d4/videos")
 output.music     # Path("result/20260324_112523_a1b2c3d4/music")
-output.web       # Path("result/20260324_112523_a1b2c3d4/web")
+output.code      # Path("result/20260324_112523_a1b2c3d4/code")
 output.breakout  # Path("result/20260324_112523_a1b2c3d4/breakout")
 ```
 
@@ -131,7 +129,7 @@ ofp-videos/
 ofp-music/
 ofp-breakout/
 ofp-showcase/
-ofp-web/
+ofp-code/
 ```
 
 ## Migration from Legacy Directories
@@ -140,7 +138,7 @@ Previously, outputs were scattered across project-root directories:
 - `ofp-images/` → now `result/<session>/images/`
 - `ofp-videos/` → now `result/<session>/videos/`
 - `ofp-music/` → now `result/<session>/music/`
-- `ofp-web/` (and `ofp-showcase/`) → now `result/<session>/web/`
+- `ofp-code/` → now `result/<session>/code/`
 - `ofp-breakout/` → now `result/<session>/breakout/`
 - `manuscript_*.txt` → now `result/<session>/manuscript.txt`
 - `memory_*.json` → now `result/<session>/memory.json`
