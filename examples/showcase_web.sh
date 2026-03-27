@@ -103,11 +103,8 @@ VISION / IMAGE ANALYSIS
   openai:image-to-text       — GPT vision
   google:image-to-text       — Gemini vision
 
-WEB PAGE GENERATION (output: HTML files in session folder)
-  hf:web-page-generation     — HTML builder via HF (recommended: moonshotai/Kimi-K2.5)
-  anthropic:web-page-generation
-  openai:web-page-generation
-  google:web-page-generation
+CODE GENERATION (output: files in ofp-code/)
+  openai:code-generation     — coding agent via OpenAI code_interpreter (default: gpt-5.4-long-context)
 
 PERCEPTION (HuggingFace)
   hf:image-classification    — Classify what is in an image
@@ -421,5 +418,5 @@ ofp-playground web \
   --agent "google:text-to-image:NanoBananPainter:${NANO_BANAN_PAINTER_PROMPT}" \
   --agent "google:text-to-music:Composer:${COMPOSER_PROMPT}" \
   --agent "anthropic:Architect:${ARCHITECT_PROMPT}:claude-sonnet-4-6" \
-  --agent "anthropic:web-page-generation:FrontendDev:${FRONTEND_DEV_PROMPT}" \
+  --agent "openai:code-generation:FrontendDev:${FRONTEND_DEV_PROMPT}" \
   --port 7860
