@@ -14,6 +14,7 @@ from .ocr import OCRAgent
 from .text_classifier import TextClassificationAgent
 from .ner import NERAgent
 from .summarizer import SummarizationAgent
+from .codex import CodingAgent
 
 __all__ = [
     "AnthropicAgent",
@@ -34,4 +35,5 @@ __all__ = [
     "TextClassificationAgent",
     "NERAgent",
     "SummarizationAgent",
+    "CodingAgent",
 ]
