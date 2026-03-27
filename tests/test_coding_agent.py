@@ -84,7 +84,7 @@ async def test_directive_parsing(tmp_path):
         mock_rf.assert_not_called()
 
     # _task_directive stores the full raw directive text (incl. "[DIRECTIVE for Coder]:" prefix),
-    # mirroring web_page.py's _page_directive pattern — NOT just the parsed instruction.
+    # NOT just the parsed instruction extracted by _parse_showrunner_message.
     assert "DIRECTIVE for Coder" in agent._task_directive
 
 

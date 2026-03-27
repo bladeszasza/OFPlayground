@@ -128,7 +128,7 @@ def _parse_agent_spec(spec: str) -> tuple[str, str, str, Optional[str], Optional
         "image-text-to-text", "image-classification", "object-detection",
         "image-segmentation", "token-classification", "text-classification",
         "summarization", "showrunner", "orchestrator",
-        "web-page", "web-page-generation", "web-showcase",
+        "code-generation",
     }
     def _looks_like_model_id(s: str) -> bool:
         """Return True only if s looks like a model identifier (no whitespace, ≤256 chars)."""
