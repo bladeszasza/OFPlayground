@@ -229,6 +229,8 @@ BREAKOUT SESSIONS: Use create_breakout_session to spin up a temporary sub-floor.
 - Breakouts CANNOT nest — they run one level deep only. Each breakout gets its own agents.
 - Choose the right policy for the breakout (sequential, round_robin, moderated, free_for_all).
 - Do NOT call create_breakout_session and [ASSIGN] in the same turn — wait for the breakout summary first.
+- Do NOT repeat breakout topics that have already been completed — check the SESSION MEMORY below for completed breakouts. The system will reject duplicates.
+- Once all required research breakouts are done, move on to the next phase of your mission. Do not keep cycling through the same topics.
 
 For all other control, respond ONLY with structured directives — one per line, no preamble, no commentary:
 
@@ -434,7 +436,7 @@ class OrchestratorAgent(_OrchestratorBase, HuggingFaceAgent):
         from ofp_playground.floor.breakout_tools import build_breakout_tools, tool_use_to_breakout_directive
 
         system = self._build_system_prompt([])
-        messages = [{"role": "system", "content": system}] + list(self._conversation_history[-20:])
+        messages = [{"role": "system", "content": system}] + list(self._conversation_history)
         if len(messages) == 1:
             messages.append({"role": "user", "content": "Begin your mission."})
 
@@ -569,7 +571,7 @@ class AnthropicOrchestratorAgent(_OrchestratorBase, AnthropicAgent):
 
         client = self._get_client()
         system = self._build_system_prompt([])
-        messages = list(self._conversation_history[-20:])
+        messages = list(self._conversation_history)
         if not messages:
             messages = [{"role": "user", "content": "Begin your mission."}]
 
@@ -694,7 +696,7 @@ class OpenAIOrchestratorAgent(_OrchestratorBase, OpenAIAgent):
 
         client = self._get_client()
         system = self._build_system_prompt([])
-        history = list(self._conversation_history[-20:])
+        history = list(self._conversation_history)
         if not history:
             history = [{"role": "user", "content": "Begin your mission."}]
 
@@ -813,7 +815,7 @@ class GoogleOrchestratorAgent(_OrchestratorBase, GoogleAgent):
         from ofp_playground.floor.breakout_tools import build_breakout_tools, tool_use_to_breakout_directive
 
         system = self._build_system_prompt([])
-        history = list(self._conversation_history[-20:])
+        history = list(self._conversation_history)
         if not history:
             history = [{"role": "user", "content": "Begin your mission."}]
 

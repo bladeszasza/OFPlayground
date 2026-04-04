@@ -39,6 +39,8 @@ logger = logging.getLogger(__name__)
 
 FLOOR_MANAGER_NAME = "Floor Manager"
 FLOOR_MANAGER_URI_STR = FLOOR_MANAGER_URI
+ORCHESTRATOR_RECOVERY_BASE_DELAY_S = 0.5
+ORCHESTRATOR_RECOVERY_MAX_DELAY_S = 3.0
 
 
 def make_floor_manager_manifest() -> Manifest:
@@ -90,6 +92,7 @@ class FloorManager:
         self._showrunner_uri: Optional[str] = None
         self._orchestrator_uri: Optional[str] = None
         self._assigned_uri: Optional[str] = None  # currently assigned agent in showrunner_driven mode
+        self._last_orchestrator_directive_text: str = ""  # suppress duplicate replay while assignment is in flight
         self._spawn_callback: Optional[callable] = None  # set externally after creation
         self._orchestrator_idle_grants: int = 0  # consecutive floor grants with no productive action
         self._skip_next_orchestrator_yield: bool = False  # absorb stale yieldFloor after breakout re-grant
@@ -321,6 +324,30 @@ class FloorManager:
                     media_path = feat.tokens[0].value
                     break
 
+        # Coding agents send private liveness whispers (e.g. "Running code_interpreter...").
+        # Those are not completed worker outputs and must not return the floor.
+        if (
+            self._orchestrator_uri
+            and self._assigned_uri
+            and sender_uri == self._assigned_uri
+            and text
+            and text.startswith(f"[{sender_name}]")
+            and any(
+                marker in text
+                for marker in (
+                    "Starting coding task",
+                    "Running code_interpreter",
+                    "Output:",
+                    "Saved ",
+                    "Directive requested text-only mode",
+                    "Tool mode unavailable, retrying without tools",
+                )
+            )
+        ):
+            if self._renderer:
+                self._renderer.show_system_event(text)
+            return
+
         # Build typed Utterance and store in history
         if media_key == "image" and media_path:
             utterance = Utterance.from_image(sender_uri, sender_name, text, media_path)
@@ -335,6 +362,11 @@ class FloorManager:
         # SHOWRUNNER_DRIVEN: orchestrator utterance → parse its directives
         # ----------------------------------------------------------------
         if self._orchestrator_uri and sender_uri == self._orchestrator_uri:
+            # Suppress replayed duplicate directives while a worker assignment is pending.
+            if self._assigned_uri and text == self._last_orchestrator_directive_text:
+                logger.debug("Ignoring duplicate orchestrator directives while assignment is pending")
+                return
+            self._last_orchestrator_directive_text = text
             self._orchestrator_idle_grants = 0  # any response resets the nudge sequence
             if self._renderer:
                 self._renderer.show_utterance(
@@ -489,6 +521,9 @@ class FloorManager:
         """
         import re
 
+        # Strip hallucinated model formatting artifacts (e.g. numerusform{...})
+        text = re.sub(r'numerusform\{[^}]*\}', '', text)
+
         assigned_in_batch = False  # guard: only one [ASSIGN] per directive batch
         breakout_header: Optional[dict] = None  # parsed from [BREAKOUT ...]
         breakout_agent_specs: list[str] = []    # raw specs from [BREAKOUT_AGENT ...]
@@ -551,6 +586,7 @@ class FloorManager:
                     assigned_in_batch = True
                     # Track who is assigned so _handle_request_floor can filter others
                     self._assigned_uri = target_uri
+                    self._last_orchestrator_directive_text = line
                     # Flush any stale queue entries from agents that saw the orchestrator utterance
                     self._policy._request_queue.clear()
                     # Build directive, injecting manuscript context for local LLM agents only.
@@ -723,6 +759,34 @@ class FloorManager:
         if breakout_header and breakout_agent_specs:
             await self._execute_breakout(breakout_header, breakout_agent_specs)
 
+    @staticmethod
+    def _breakout_topic_keywords(topic: str) -> set[str]:
+        """Extract normalised keywords from a breakout topic string."""
+        import re as _re
+        _STOP = {
+            "and", "or", "the", "for", "of", "in", "to", "a", "an", "on",
+            "is", "are", "was", "were", "be", "been", "with", "from", "by",
+            "at", "as", "its", "it", "how", "what", "when", "where", "why",
+            "versus", "vs", "that", "this", "which", "into",
+        }
+        words = set(_re.findall(r"[a-z0-9]+", topic.lower()))
+        return words - _STOP
+
+    def _find_duplicate_breakout(self, topic: str) -> Optional[str]:
+        """Return the key of an existing breakout whose topic overlaps significantly."""
+        from ofp_playground.memory.store import MemoryCategory
+        new_kw = self._breakout_topic_keywords(topic)
+        if not new_kw:
+            return None
+        for entry in self._memory_store.recall(category=MemoryCategory.BREAKOUTS):
+            existing_kw = self._breakout_topic_keywords(entry.key)
+            if not existing_kw:
+                continue
+            overlap = len(new_kw & existing_kw) / min(len(new_kw), len(existing_kw))
+            if overlap >= 0.6:
+                return entry.key
+        return None
+
     async def _execute_breakout(self, header: dict, agent_specs: list[str]) -> None:
         """Spawn temporary agents, run a breakout session, inject result.
 
@@ -732,6 +796,27 @@ class FloorManager:
         topic = header["topic"]
         policy_str = header["policy"]
         max_rounds = min(max(header["max_rounds"], 2), 20)
+
+        # ── Deduplication: reject topics that overlap heavily with prior breakouts ──
+        existing = self._find_duplicate_breakout(topic)
+        if existing:
+            logger.warning(
+                "Orchestrator [BREAKOUT]: topic '%s' duplicates completed breakout '%s' — skipping",
+                topic, existing,
+            )
+            feedback = (
+                f"[SYSTEM] Breakout topic \"{topic}\" is too similar to already-completed "
+                f"breakout \"{existing}\". Choose a substantially different angle or "
+                f"move to the next phase of your mission."
+            )
+            await self._send_directed_utterance(feedback, target_uri=self._orchestrator_uri)
+            self._skip_next_orchestrator_yield = True
+            await self.grant_to(self._orchestrator_uri)
+            if self._renderer:
+                self._renderer.show_system_event(
+                    f"[Orchestrator] Breakout skipped — duplicate of '{existing[:60]}'"
+                )
+            return
 
         try:
             policy = FloorPolicy(policy_str)
@@ -765,6 +850,16 @@ class FloorManager:
             self._pending_breakout_file = artifact_path  # injected into next ASSIGN directive
         else:
             compact_text = callback_result
+
+        # ── Record completed breakout topic in session memory for dedup ──
+        from ofp_playground.memory.store import MemoryCategory
+        summary_preview = (compact_text or "")[:200]
+        self._memory_store.store(
+            category=MemoryCategory.BREAKOUTS,
+            key=topic,
+            content=f"Completed. {summary_preview}",
+            author="system",
+        )
 
         # Breakout output is context-only — do NOT set _last_worker_text so
         # it cannot be [ACCEPT]-ed into the manuscript.
@@ -949,6 +1044,12 @@ class FloorManager:
                 self._renderer.show_system_event(
                     f"[Orchestrator] Recovery nudge #{self._orchestrator_idle_grants} sent"
                 )
+            backoff = min(
+                ORCHESTRATOR_RECOVERY_BASE_DELAY_S * self._orchestrator_idle_grants,
+                ORCHESTRATOR_RECOVERY_MAX_DELAY_S,
+            )
+            if backoff > 0:
+                await asyncio.sleep(backoff)
             await self._grant_floor(self._orchestrator_uri)
 
     async def process_envelope(self, envelope: Envelope) -> None:

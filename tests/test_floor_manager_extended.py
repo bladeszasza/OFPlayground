@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from ofp_playground.bus.message_bus import MessageBus, FLOOR_MANAGER_URI
@@ -213,3 +215,91 @@ class TestAssignDirective:
         bus, fm, fm_q, orc_q, orc_uri = await _setup_fm_with_orchestrator()
         # Should not raise even if the agent isn't registered
         await fm._handle_orchestrator_directives("[ASSIGN PhantomAgent]: Some task")
+
+
+class TestOrchestratorRecoveryBackoff:
+    @pytest.mark.asyncio
+    async def test_recovery_nudge_waits_before_regrant(self):
+        bus, fm, fm_q, orc_q, orc_uri = await _setup_fm_with_orchestrator()
+
+        from openfloor import Conversation, Envelope, Sender
+        envelope = Envelope(
+            sender=Sender(speakerUri=orc_uri, serviceUrl="local://orchestrator"),
+            conversation=Conversation(id=fm.conversation_id),
+            events=[],
+        )
+
+        fm._policy.grant_to(orc_uri)
+        fm._assigned_uri = None
+        fm._send_directed_utterance = AsyncMock()
+        fm._grant_floor = AsyncMock()
+
+        with patch("ofp_playground.floor.manager.asyncio.sleep", new_callable=AsyncMock) as sleep_mock:
+            await fm._handle_yield_floor(envelope)
+
+        sleep_mock.assert_awaited_once_with(0.5)
+        fm._send_directed_utterance.assert_awaited_once()
+        fm._grant_floor.assert_awaited_once_with(orc_uri)
+
+
+class TestShowrunnerDuplicateSuppression:
+    @pytest.mark.asyncio
+    async def test_coding_progress_does_not_return_floor(self):
+        bus, fm, fm_q, orc_q, orc_uri = await _setup_fm_with_orchestrator()
+
+        worker_uri = "tag:test:igor"
+        fm.register_agent(worker_uri, "Igor")
+        fm._assigned_uri = worker_uri
+        fm.grant_to = AsyncMock()
+
+        from openfloor import Conversation, DialogEvent, Envelope, Sender, TextFeature, Token, UtteranceEvent
+        envelope = Envelope(
+            sender=Sender(speakerUri=worker_uri, serviceUrl="local://worker"),
+            conversation=Conversation(id=fm.conversation_id),
+            events=[],
+        )
+        event = UtteranceEvent(
+            dialogEvent=DialogEvent(
+                id="evt-progress",
+                speakerUri=worker_uri,
+                features={
+                    "text": TextFeature(mimeType="text/plain", tokens=[Token(value="[Igor] Running code_interpreter...")])
+                },
+            )
+        )
+
+        await fm._handle_utterance(envelope, event)
+
+        fm.grant_to.assert_not_called()
+        assert fm._assigned_uri == worker_uri
+
+    @pytest.mark.asyncio
+    async def test_duplicate_orchestrator_directive_ignored_while_assigned(self):
+        bus, fm, fm_q, orc_q, orc_uri = await _setup_fm_with_orchestrator()
+
+        worker_uri = "tag:test:csabi"
+        fm.register_agent(worker_uri, "Csabi")
+        fm._assigned_uri = worker_uri
+        fm._handle_orchestrator_directives = AsyncMock()
+
+        from openfloor import Conversation, DialogEvent, Envelope, Sender, TextFeature, Token, UtteranceEvent
+        text = "[ACCEPT]\n[ASSIGN Csabi]: Define product frame in 200 words."
+        envelope = Envelope(
+            sender=Sender(speakerUri=orc_uri, serviceUrl="local://orchestrator"),
+            conversation=Conversation(id=fm.conversation_id),
+            events=[],
+        )
+        event = UtteranceEvent(
+            dialogEvent=DialogEvent(
+                id="evt-dup",
+                speakerUri=orc_uri,
+                features={
+                    "text": TextFeature(mimeType="text/plain", tokens=[Token(value=text)])
+                },
+            )
+        )
+
+        await fm._handle_utterance(envelope, event)
+        await fm._handle_utterance(envelope, event)
+
+        fm._handle_orchestrator_directives.assert_awaited_once_with(text)

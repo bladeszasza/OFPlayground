@@ -166,7 +166,37 @@ async def test_files_saved_to_ofp_code(tmp_path):
     with patch("openai.AsyncOpenAI", return_value=mock_client):
         _, saved = await agent._run_openai_coding_loop("test context")
 
+    stream_kwargs = mock_client.responses.stream.call_args.kwargs
+    assert stream_kwargs["tools"][0]["container"] == {"type": "auto"}
     assert len(saved) == 1
     assert saved[0].exists()
     assert saved[0].read_bytes() == fake_bytes
     assert "solution" in saved[0].name
+
+
+@pytest.mark.asyncio
+async def test_retry_without_tools_directive_omits_tools_payload(tmp_path):
+    agent = _make_agent(tmp_path)
+    agent._task_directive = "[DIRECTIVE for Coder]: Retry without tools. Deliver architecture bullets only."
+
+    mock_part = MagicMock(type="output_text", text="Architecture bullets")
+    mock_item = MagicMock(type="message", content=[mock_part])
+    mock_final = MagicMock(output=[mock_item])
+
+    mock_stream = AsyncMock()
+    mock_stream.__aenter__ = AsyncMock(return_value=mock_stream)
+    mock_stream.__aexit__ = AsyncMock(return_value=False)
+    mock_stream.__aiter__.return_value = iter([])
+    mock_stream.get_final_response = AsyncMock(return_value=mock_final)
+
+    mock_client = AsyncMock()
+    mock_client.responses.stream = MagicMock(return_value=mock_stream)
+    mock_client.files.content = AsyncMock()
+
+    with patch("openai.AsyncOpenAI", return_value=mock_client):
+        output, saved = await agent._run_openai_coding_loop("test context")
+
+    stream_kwargs = mock_client.responses.stream.call_args.kwargs
+    assert "tools" not in stream_kwargs
+    assert output == "Architecture bullets"
+    assert saved == []

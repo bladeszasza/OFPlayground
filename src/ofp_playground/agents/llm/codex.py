@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = Path("ofp-code")
 DEFAULT_MODEL_OPENAI = "gpt-5.4-long-context"
+CODE_INTERPRETER_CONTAINER = {"type": "auto"}
 
 
 class CodingAgent(BaseLLMAgent):
@@ -117,10 +118,30 @@ class CodingAgent(BaseLLMAgent):
         parts.append(
             "\n=== OUTPUT CONTRACT ===\n"
             "Implement the task completely using code_interpreter. "
-            "Save all output files. "
+            "Save all output files to disk inside the code_interpreter session. "
+            "Return your full output text INLINE — do NOT include markdown download links like "
+            "[Download ...](sandbox:/mnt/data/...) because those paths are inaccessible to other agents. "
             "Return ONLY the implementation — no preamble, no explanation unless requested.\n"
         )
         return "\n".join(parts)
+
+    def _tools_disabled_for_directive(self) -> bool:
+        """Return True when directive explicitly requests text-only execution."""
+        directive = (self._task_directive or "").lower()
+        disable_markers = (
+            "[retry_no_tools]",
+            "retry without tools",
+            "without tools",
+            "no code execution",
+            "architecture bullets only",
+            "deliver architecture bullets only",
+        )
+        return any(marker in directive for marker in disable_markers)
+
+    @staticmethod
+    def _is_tool_configuration_error(err: Exception) -> bool:
+        low = str(err).lower()
+        return "tools[0].container" in low or "code_interpreter" in low and "missing required parameter" in low
 
     async def _run_openai_coding_loop(self, context: str) -> tuple[str, list[Path]]:
         """Run OpenAI Responses API streaming with code_interpreter.
@@ -130,48 +151,68 @@ class CodingAgent(BaseLLMAgent):
         openai SDK as of 2026-03. Verify against sdk changelog if the API changes.
         """
         from openai import AsyncOpenAI
-        client = AsyncOpenAI(api_key=self._api_key)
-        output_text = ""
-        file_ids: list[tuple[str, str]] = []  # (file_id, filename)
+        tools_disabled = self._tools_disabled_for_directive()
+        if tools_disabled:
+            await self._send_progress("Directive requested text-only mode (tools disabled).")
+
+        async def _stream_once() -> tuple[str, list[tuple[str, str]]]:
+            client = AsyncOpenAI(api_key=self._api_key)
+            local_output_text = ""
+            local_file_ids: list[tuple[str, str]] = []
+            request_kwargs = {
+                "model": self._model,
+                "instructions": self._synopsis,
+                "input": context,
+                "reasoning": {"effort": "high"},
+                "max_output_tokens": 32000,
+            }
+            if not tools_disabled:
+                request_kwargs["tools"] = [{
+                    "type": "code_interpreter",
+                    "container": CODE_INTERPRETER_CONTAINER,
+                }]
+
+            try:
+                async with client.responses.stream(**request_kwargs) as stream:  # type: ignore[call-overload]
+                    async for event in stream:
+                        event_type = getattr(event, "type", "")
+
+                        if event_type == "response.output_item.added":
+                            item_type = getattr(getattr(event, "item", None), "type", "")
+                            if item_type == "code_interpreter_call":
+                                await self._send_progress("Running code_interpreter...")
+
+                        elif event_type == "response.output_item.done":
+                            item = getattr(event, "item", None)
+                            if item and getattr(item, "type", "") == "code_interpreter_call":
+                                for out in (getattr(item, "outputs", None) or []):
+                                    if getattr(out, "type", "") == "files":
+                                        for f in (getattr(out, "files", None) or []):
+                                            local_file_ids.append((f.file_id, f.filename))
+                                    elif getattr(out, "type", "") == "logs":
+                                        logs = (getattr(out, "logs", "") or "").strip()
+                                        if logs:
+                                            await self._send_progress(f"Output: {logs[:120]}")
+
+                    final = await stream.get_final_response()
+                    for item in (final.output or []):
+                        if getattr(item, "type", "") == "message":
+                            for part in (getattr(item, "content", None) or []):
+                                if getattr(part, "type", "") == "output_text":
+                                    local_output_text += getattr(part, "text", "")
+            finally:
+                await client.close()
+
+            return local_output_text, local_file_ids
 
         try:
-            async with client.responses.stream(  # type: ignore[call-overload]
-                model=self._model,
-                instructions=self._synopsis,
-                input=context,
-                tools=[{"type": "code_interpreter"}],
-                reasoning={"effort": "high"},
-                max_output_tokens=32000,
-            ) as stream:
-                async for event in stream:
-                    event_type = getattr(event, "type", "")
-
-                    if event_type == "response.output_item.added":
-                        item_type = getattr(getattr(event, "item", None), "type", "")
-                        if item_type == "code_interpreter_call":
-                            await self._send_progress("Running code_interpreter...")
-
-                    elif event_type == "response.output_item.done":
-                        item = getattr(event, "item", None)
-                        if item and getattr(item, "type", "") == "code_interpreter_call":
-                            for out in (getattr(item, "outputs", None) or []):
-                                if getattr(out, "type", "") == "files":
-                                    for f in (getattr(out, "files", None) or []):
-                                        file_ids.append((f.file_id, f.filename))
-                                elif getattr(out, "type", "") == "logs":
-                                    logs = (getattr(out, "logs", "") or "").strip()
-                                    if logs:
-                                        await self._send_progress(f"Output: {logs[:120]}")
-
-                final = await stream.get_final_response()
-                for item in (final.output or []):
-                    if getattr(item, "type", "") == "message":
-                        for part in (getattr(item, "content", None) or []):
-                            if getattr(part, "type", "") == "output_text":
-                                output_text += getattr(part, "text", "")
-
-        finally:
-            await client.close()
+            output_text, file_ids = await self._call_with_retry(_stream_once)
+        except Exception as e:
+            if tools_disabled or not self._is_tool_configuration_error(e):
+                raise
+            await self._send_progress("Tool mode unavailable, retrying without tools.")
+            tools_disabled = True
+            output_text, file_ids = await self._call_with_retry(_stream_once)
 
         # Download files produced by code_interpreter
         saved_files: list[Path] = []
@@ -208,9 +249,15 @@ class CodingAgent(BaseLLMAgent):
             context = self._build_context()
             output_text, saved_files = await self._run_openai_coding_loop(context)
 
+            import re as _re
+            cleaned_output = _re.sub(
+                r"\[(?:Download [^\]]*|[^\]]+)\]\(sandbox:/mnt/data/[^)]*\)",
+                "",
+                (output_text or ""),
+            ).strip()
             lines: list[str] = []
-            if output_text:
-                lines.append(output_text.strip())
+            if cleaned_output:
+                lines.append(cleaned_output)
             for path in saved_files:
                 lines.append(f"File saved: {path.resolve()}")
             result = "\n".join(lines) if lines else "Coding task complete (no file output)."

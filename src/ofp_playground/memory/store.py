@@ -20,12 +20,14 @@ class MemoryCategory(str, Enum):
     LESSONS      = "lessons"       # What went wrong and how to avoid repeating mistakes
     PREFERENCES  = "preferences"   # User/topic style preferences observed
     GOALS        = "goals"         # Original mission and high-level objectives
+    BREAKOUTS    = "breakouts"     # Completed breakout session topics (dedup guard)
 
 
 # Priority order for summary output — most important first
 _SUMMARY_PRIORITY = [
     MemoryCategory.GOALS,
     MemoryCategory.TASKS,
+    MemoryCategory.BREAKOUTS,
     MemoryCategory.DECISIONS,
     MemoryCategory.LESSONS,
     MemoryCategory.AGENT_PROFILES,

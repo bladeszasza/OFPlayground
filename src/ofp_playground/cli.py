@@ -927,7 +927,7 @@ async def _spawn_llm_agent(
             elif task in ("text-to-music",):
                 agent._output_dir = out.music
             elif task == "code-generation":
-                agent._output_dir = out.code
+                agent._output_dir = out.sandbox
             else:
                 agent._output_dir = out.root
             agent._output_dir.mkdir(parents=True, exist_ok=True)

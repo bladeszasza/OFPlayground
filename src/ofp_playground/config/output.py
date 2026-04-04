@@ -74,3 +74,9 @@ class SessionOutputManager:
         d = self._root / "breakout"
         d.mkdir(exist_ok=True)
         return d
+
+    @property
+    def sandbox(self) -> Path:
+        d = self._root / "sandbox"
+        d.mkdir(exist_ok=True)
+        return d
