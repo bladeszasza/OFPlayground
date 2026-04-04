@@ -60,6 +60,16 @@ It is a lot. I did not plan for it to be this much. These things have a way of g
 
 ---
 
+## Remote Agents and the Open Ecosystem
+
+The playground includes a `RemoteOFPAgent` that acts as a local proxy for OFP-compliant external endpoints. A handful of known slugs are pre-configured: research agents for arxiv, Wikipedia, GitHub repositories, and SEC filings; a web search specialist; a NASA astronomy image agent; a hallucination detection agent; a content moderation agent.
+
+You point your session at a remote URL, and the agent participates using the same OFP mechanics as any local agent: it receives envelopes, publishes a manifest, gets floor grants, produces utterances. The floor manager sees no difference.
+
+One failure mode worth flagging: remote agents are configured not to respond to other remote agents. Without this, two remote agents can trigger each other's responses indefinitely in an exponential message loop. This is easy to prevent once you know it exists and miserable to debug if you encounter it without warning.
+
+---
+
 ## The Five Floor Policies
 
 This is where the protocol's flexibility becomes concrete. Five policies, five completely different experiences from the same underlying agents and bus.
@@ -75,16 +85,6 @@ This is where the protocol's flexibility becomes concrete. Five policies, five c
 **Showrunner Driven** — the most powerful and the most complex. One orchestrator agent controls the entire session. Workers only speak when assigned. The orchestrator has a full directive language: `[ASSIGN Name]: task`, `[ACCEPT]`, `[REJECT Name]: reason`, `[KICK Name]`, `[SPAWN spec]`, `[SKIP Name]: reason`, and `[TASK_COMPLETE]`. It is also manifest-aware, has memory tools to store and recall decisions across the session, and breakout tools to spin up temporary sub-floor discussions. The resilience rules bear mentioning: one failure gets a rejection with specific feedback; two failures spawn a replacement from a different provider; three failures skip and move on. I added this after watching early sessions get stuck indefinitely on a single failing agent.
 
 I welcome new entries here — if there is a need for a new floor policy, feel free to code it.
-
----
-
-## Remote Agents and the Open Ecosystem
-
-The playground includes a `RemoteOFPAgent` that acts as a local proxy for OFP-compliant external endpoints. A handful of known slugs are pre-configured: research agents for arxiv, Wikipedia, GitHub repositories, and SEC filings; a web search specialist; a NASA astronomy image agent; a hallucination detection agent; a content moderation agent.
-
-You point your session at a remote URL, and the agent participates using the same OFP mechanics as any local agent: it receives envelopes, publishes a manifest, gets floor grants, produces utterances. The floor manager sees no difference.
-
-One failure mode worth flagging: remote agents are configured not to respond to other remote agents. Without this, two remote agents can trigger each other's responses indefinitely in an exponential message loop. This is easy to prevent once you know it exists and miserable to debug if you encounter it without warning.
 
 ---
 
