@@ -165,7 +165,9 @@ It is not a production system. Session memory is ephemeral. Breakout sub-floors 
 The setup is simple. If you have Python, you have what you need:
 
 ```bash
-pip install -e ".[dev]"
+git clone https://github.com/bladeszasza/OFPlayground
+cd OFPlayground
+pip install -e .
 ```
 
 Set your API keys (use whatever you have — agents that need missing keys will just not work):
