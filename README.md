@@ -45,9 +45,16 @@ Keys are also read from `~/.ofp-playground/config.toml` under `[api_keys]`. Only
 
 ## Quick Start
 
+`ofp-playground canvas`
+
+or other options
+
 ```bash
 # Simple chat with one agent
 ofp-playground start --agent "anthropic:Claude:You are a helpful assistant."
+
+# Rich Canvas interface 
+ofp-playground canvas
 
 # Autonomous debate, no human
 ofp-playground start --no-human \
