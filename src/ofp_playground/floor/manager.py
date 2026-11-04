@@ -5,7 +5,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Protocol
 
 from openfloor import (
     Capability,
@@ -40,12 +40,33 @@ from ofp_playground.memory.artifact_store import ArtifactStore
 from ofp_playground.memory.artifact_store import _slugify as _artifact_slugify
 from ofp_playground.memory.store import MemoryStore
 from ofp_playground.models.artifact import Utterance
-from ofp_playground.renderer.terminal import TerminalRenderer
 from ofp_playground.trace import EventCollector, render_trace_html
 
 logger = logging.getLogger(__name__)
 
 FLOOR_MANAGER_NAME = "Floor Manager"
+
+
+class FloorRenderer(Protocol):
+    """What the floor manager needs from a UI: the terminal renderer, the web
+    adapter (``GradioFloorEvents``) and the canvas' silent terminal all fit."""
+
+    show_floor_events: bool
+
+    def add_agent(self, speaker_uri: str, name: str) -> None: ...
+
+    def show_system_event(self, message: str) -> None: ...
+
+    def show_utterance(
+        self,
+        speaker_uri: str,
+        speaker_name: str,
+        text: str,
+        media_key: str | None = None,
+        media_path: str | None = None,
+    ) -> None: ...
+
+    def show_manuscript(self, text: str, filepath: str | None = None) -> None: ...
 
 
 def _looks_like_internal_coding_progress(sender_name: str, text: str) -> bool:
@@ -119,7 +140,7 @@ class FloorManager:
         self,
         bus: MessageBus,
         policy: FloorPolicy = FloorPolicy.SEQUENTIAL,
-        renderer: TerminalRenderer | None = None,
+        renderer: FloorRenderer | None = None,
     ):
         self._bus = bus
         self._manifest = make_floor_manager_manifest()
