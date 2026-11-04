@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Optional
 
 from ofp_playground.agents.llm.codex import BaseCodingAgent, save_code_blocks
 from ofp_playground.bus.message_bus import MessageBus
@@ -30,7 +30,7 @@ class GoogleCodingAgent(BaseCodingAgent):
         bus: MessageBus,
         conversation_id: str,
         api_key: str,
-        model: Optional[str] = None,
+        model: str | None = None,
     ):
         super().__init__(
             name=name,
@@ -80,7 +80,7 @@ class GoogleCodingAgent(BaseCodingAgent):
             client = genai.Client(api_key=self._api_key)
 
             # Build tools: native code execution + file tools
-            tool_list = []
+            tool_list: list[types.Tool | Callable] = []
             if not tools_disabled:
                 tool_list.append(types.Tool(code_execution=types.ToolCodeExecution()))
                 file_decls = self._build_google_file_tools()

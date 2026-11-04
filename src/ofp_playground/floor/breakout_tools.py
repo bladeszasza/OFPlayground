@@ -18,7 +18,6 @@ if TYPE_CHECKING:
 
 from ofp_playground.floor.policy import FloorPolicy
 
-
 # Policies available for breakout sessions (not showrunner_driven —
 # that would require an orchestrator inside the breakout, which is
 # one-level-only).
@@ -27,7 +26,7 @@ _BREAKOUT_POLICIES = [
 ]
 
 
-def build_breakout_tools(settings: "Settings") -> list[dict]:
+def build_breakout_tools(settings: Settings) -> list[dict]:
     """Return Anthropic-format tool definitions for breakout sessions.
 
     Use to_hf_tools() / to_openai_tools() / to_google_tools() from

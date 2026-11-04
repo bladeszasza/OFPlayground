@@ -2,16 +2,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sys
 import threading
+from dataclasses import asdict
 from pathlib import Path
-from typing import Optional
 
 import click
+import httpx
 from rich.console import Console
 
+from ofp_playground import __version__
+from ofp_playground.agents.base import BasePlaygroundAgent
 from ofp_playground.agents.human import HumanAgent
 from ofp_playground.agents.registry import AgentRegistry
 from ofp_playground.bus.message_bus import MessageBus
@@ -66,7 +70,7 @@ def _parse_policy(policy_str: str) -> FloorPolicy:
         raise click.BadParameter(f"Invalid policy. Choose from: {valid}")
 
 
-def _parse_agent_spec(spec: str) -> tuple[str, str, str, Optional[str], Optional[int], Optional[float], int]:
+def _parse_agent_spec(spec: str) -> tuple[str, str, str, str | None, int | None, float | None, int | None]:
     """Parse agent spec in two supported formats:
 
     Colon format:  type:name[:description[:model]]
@@ -91,7 +95,7 @@ def _parse_agent_spec(spec: str) -> tuple[str, str, str, Optional[str], Optional
         flag_re = re.compile(r"(?<!\w)-(provider|name|system|model|type|max-tokens|timeout|max-retries)\s+", re.IGNORECASE)
         bracket_spans: list[tuple[int, int]] = []
         bracket_depth = 0
-        span_start: Optional[int] = None
+        span_start: int | None = None
         for index, char in enumerate(spec):
             if char == "[":
                 if bracket_depth == 0:
@@ -147,7 +151,7 @@ def _parse_agent_spec(spec: str) -> tuple[str, str, str, Optional[str], Optional
         timeout_raw = flags.get("timeout")
         timeout_override = float(timeout_raw) if timeout_raw else None
         max_retries_raw = flags.get("max-retries")
-        max_retries_override = int(max_retries_raw) if max_retries_raw and max_retries_raw.isdigit() else 0
+        max_retries_override = int(max_retries_raw) if max_retries_raw and max_retries_raw.isdigit() else None
 
         if not provider:
             raise click.BadParameter(f"Missing -provider in agent spec: {spec}")
@@ -195,7 +199,8 @@ def _parse_agent_spec(spec: str) -> tuple[str, str, str, Optional[str], Optional
             f"'-provider TYPE -name NAME [-system DESC] [-model MODEL]'"
         )
 
-    if len(head) >= 3 and head[1].lower() in TASK_SUBTYPES:
+    demo_mode = head[0].lower() == "demo" and head[1].lower() in {"normal", "rate-limit", "input-wait", "silent", "stalled"}
+    if len(head) >= 3 and (head[1].lower() in TASK_SUBTYPES or demo_mode):
         # type:subtype:name[:rest]
         agent_type = f"{head[0]}:{head[1]}".lower()
         name = head[2]
@@ -216,7 +221,7 @@ def _parse_agent_spec(spec: str) -> tuple[str, str, str, Optional[str], Optional
             description = f"I am {name}, an AI assistant."
             model_override = None
     description = _resolve_agent_slug(description)
-    return agent_type, name, description, model_override, None, None, 0
+    return agent_type, name, description, model_override, None, None, None
 
 
 def _build_canvas_config(
@@ -224,7 +229,7 @@ def _build_canvas_config(
     agents: tuple[str, ...],
     topic: str | None,
     no_human: bool,
-    max_turns: Optional[int],
+    max_turns: int | None,
     human_name: str,
 ) -> dict:
     """Build a StartRequest-shaped dict from CLI flags for canvas pre-population."""
@@ -328,14 +333,16 @@ def _resolve_remote(slug_or_url: str) -> tuple[str, str]:
 
 async def _connect_remote_agent(
     slug_or_url: str,
-    floor: "FloorManager",
-    bus: "MessageBus",
-    registry: "AgentRegistry",
-    renderer: "TerminalRenderer",
-) -> None:
+    floor: FloorManager,
+    bus: MessageBus,
+    registry: AgentRegistry,
+    renderer: TerminalRenderer,
+) -> BasePlaygroundAgent:
     """Resolve slug-or-URL, create RemoteOFPAgent, register and start it."""
     from ofp_playground.agents.remote import RemoteOFPAgent
     display_name, url = _resolve_remote(slug_or_url)
+    if any(n.casefold() == display_name.casefold() for n in floor.active_agents.values()):
+        raise ValueError(f"Agent {display_name!r} already exists")
     remote = RemoteOFPAgent(
         service_url=url,
         name=display_name,
@@ -349,13 +356,24 @@ async def _connect_remote_agent(
     renderer.show_system_event(f"Connected {display_name} → {url}")
     # Send OFP invite — triggers manifest exchange and floor request inside the agent.
     await floor.invite_agent(remote.speaker_uri, url)
-    asyncio.create_task(remote.run())
+    registry.start(remote)
+    return remote
 
 
-async def _seed_topic(topic: str, floor: "FloorManager", bus: "MessageBus") -> None:
+async def _seed_topic(topic: str, floor: FloorManager, bus: MessageBus) -> None:
     """Inject a topic message from the floor manager to kick off the conversation."""
-    from openfloor import Envelope, Sender, Conversation, UtteranceEvent, DialogEvent, TextFeature, Token
     import uuid
+
+    from openfloor import (
+        Conversation,
+        DialogEvent,
+        Envelope,
+        Sender,
+        TextFeature,
+        Token,
+        UtteranceEvent,
+    )
+
     from ofp_playground.bus.message_bus import FLOOR_MANAGER_URI
 
     de = DialogEvent(
@@ -378,12 +396,14 @@ async def _run_session(
     settings: Settings,
     verbose: bool,
     no_human: bool = False,
-    topic: Optional[str] = None,
-    max_turns: Optional[int] = None,
+    topic: str | None = None,
+    max_turns: int | None = None,
     human_name: str = "User",
     show_floor_events: bool = False,
 ) -> None:
     """Run the main conversation session."""
+    if no_human and not agent_specs and not remote_urls:
+        raise ValueError("Autonomous CLI sessions need at least one --agent or --remote")
     renderer = TerminalRenderer(console, show_floor_events=show_floor_events)
     bus = MessageBus()
 
@@ -393,9 +413,9 @@ async def _run_session(
 
     registry = AgentRegistry()
 
-    await _attach_floor_callbacks(floor, bus, registry, settings, renderer)
+    session = await _attach_floor_callbacks(floor, bus, registry, settings, renderer)
 
-    tasks = [floor.run()]
+    tasks = []
 
     if not no_human:
         renderer.show_system_event("Type /help for commands, /quit to exit")
@@ -408,12 +428,80 @@ async def _run_session(
         )
         floor.register_agent(human.speaker_uri, human.name)
         registry.register(human)
+        human._input_callback = session.notify_input
 
         async def handle_agents(_args: str):
             renderer.show_agents_table(floor.active_agents, floor.floor_holder)
 
         async def handle_help(_args: str):
             renderer.show_help()
+            renderer.show_system_event(
+                "/add SPEC · /status [json] · /watch [seconds] · /remove NAME [graceful|force] · "
+                "/quarantine NAME · /review NAME · /clear NAME · /personas [search] · /models"
+            )
+
+        async def handle_status(args: str):
+            if session.status is None:
+                renderer.show_system_event(session.status_problem or "ASP unavailable; status is unknown")
+                return
+            try:
+                snapshot = await session.status.connection.snapshot()
+            except (httpx.HTTPError, OSError, RuntimeError, ValueError):
+                renderer.show_system_event("ASP observation lost; previous status must be treated as stale")
+                return
+            ids = {agent.instance_id for agent in session.status.agents.values()}
+            snapshot["agents"] = [agent for agent in snapshot.get("agents", []) if agent["agentId"] in ids]
+            if args.strip() == "json":
+                click.echo(json.dumps(snapshot, ensure_ascii=True))
+            else:
+                _print_status(snapshot)
+
+        async def handle_watch(args: str):
+            seconds = min(60.0, max(1.0, float(args) if args.strip().replace(".", "", 1).isdigit() else 10.0))
+            renderer.show_system_event(f"Watching ASP for {seconds:g}s. Ctrl+C stops the session.")
+            deadline = asyncio.get_running_loop().time() + seconds
+            while asyncio.get_running_loop().time() < deadline:
+                await handle_status("")
+                await asyncio.sleep(2)
+
+        async def handle_remove(args: str):
+            parts = args.strip().rsplit(" ", 1)
+            mode = parts[-1] if len(parts) == 2 and parts[-1] in {"force", "graceful"} else "graceful"
+            name = parts[0] if len(parts) == 2 and parts[-1] in {"force", "graceful"} else args.strip()
+            agent = registry.by_name(name)
+            if agent is None:
+                renderer.show_system_event(f"Agent '{name}' not found. Use /agents to list participants.")
+                return
+            from ofp_playground.renderer.status_text import operation_text
+            result = await session.remove(agent.speaker_uri, mode=mode)
+            renderer.show_system_event(operation_text(result))
+
+        async def governance(args: str, value: str):
+            agent = registry.by_name(args.strip())
+            if agent is None:
+                agent = next((item for item in session.participants.values()
+                              if item.name.casefold() == args.strip().casefold()), None)
+            if agent is None:
+                renderer.show_system_event("Agent not found. Use /agents to list participants.")
+                return
+            from ofp_playground.renderer.status_text import operation_text
+            result = await session.set_governance(agent.speaker_uri, value)
+            renderer.show_system_event(operation_text(result))
+
+        async def handle_quarantine(args: str):
+            await governance(args, "quarantined")
+
+        async def handle_review(args: str):
+            await governance(args, "under-review")
+
+        async def handle_clear(args: str):
+            await governance(args, "normal")
+
+        async def handle_personas(args: str):
+            _print_personas(args.strip(), False, False)
+
+        async def handle_models(_args: str):
+            _print_models(settings, False)
 
         async def handle_history(args: str):
             n = int(args.strip()) if args.strip().isdigit() else 10
@@ -448,20 +536,30 @@ async def _run_session(
                 try:
                     await _connect_remote_agent(slug_or_url, floor, bus, registry, renderer)
                 except Exception as e:
+                    logger.exception("Operation failed at an application error boundary")
                     renderer.show_system_event(f"Failed to connect remote agent: {e}")
                 return
             name = parts[1]
             description = parts[2] if len(parts) > 2 else f"I am {name}, an AI assistant."
             model_ov = parts[3] if len(parts) > 3 else None
-            await _spawn_llm_agent(agent_type, name, description, floor, bus, registry, renderer, settings, model_ov)
+            try:
+                await _spawn_llm_agent(agent_type, name, description, floor, bus, registry, renderer, settings, model_ov)
+            except (ValueError, click.ClickException) as exc:
+                renderer.show_system_event(f"Agent was not added: {exc}")
+
+        async def handle_add(args: str):
+            try:
+                at, name, desc, model, tokens, timeout, retries = _parse_agent_spec(args)
+                await _spawn_llm_agent(at, name, desc, floor, bus, registry, renderer,
+                                       settings, model, tokens, timeout, retries)
+            except (ValueError, click.ClickException) as exc:
+                renderer.show_system_event(f"Agent was not added: {exc}")
 
         async def handle_kick(args: str):
             name = args.strip()
             agent = registry.by_name(name)
             if agent:
-                agent.stop()
-                floor.unregister_agent(agent.speaker_uri)
-                registry.unregister(agent.speaker_uri)
+                await session.remove(agent.speaker_uri)
                 renderer.show_system_event(f"Removed {name} from the conversation")
             else:
                 renderer.show_system_event(f"Agent '{name}' not found")
@@ -471,8 +569,17 @@ async def _run_session(
         human.register_command("history", handle_history)
         human.register_command("floor", handle_floor)
         human.register_command("spawn", handle_spawn)
+        human.register_command("add", handle_add)
         human.register_command("kick", handle_kick)
-        tasks.append(human.run())
+        human.register_command("remove", handle_remove)
+        human.register_command("status", handle_status)
+        human.register_command("watch", handle_watch)
+        human.register_command("quarantine", handle_quarantine)
+        human.register_command("review", handle_review)
+        human.register_command("clear", handle_clear)
+        human.register_command("personas", handle_personas)
+        human.register_command("models", handle_models)
+        registry.start(human)
     else:
         renderer.show_system_event("Running in autonomous mode — press Ctrl+C to stop")
 
@@ -483,6 +590,8 @@ async def _run_session(
             await _spawn_llm_agent(agent_type, name, description, floor, bus, registry, renderer, settings, model_ov, max_tokens_ov, timeout_ov, max_retries_ov)
         except Exception as e:
             renderer.show_system_event(f"Failed to spawn agent: {e}")
+            await session.close()
+            raise ValueError(f"Could not start agent: {e}") from e
 
     # Connect remote agents
     for slug_or_url in remote_urls:
@@ -490,12 +599,13 @@ async def _run_session(
             await _connect_remote_agent(slug_or_url, floor, bus, registry, renderer)
         except Exception as e:
             renderer.show_system_event(f"Failed to connect to {slug_or_url}: {e}")
+            await session.close()
+            raise ValueError(f"Could not connect remote agent: {e}") from e
 
-    # LLM/remote agents are started via asyncio.create_task in _spawn_llm_agent;
-    # only add the human agent run to tasks if present (handled above in the not no_human block)
+    # All participant run tasks are owned by the registry and joined at shutdown.
 
     # Seed topic + optional turn watchdog
-    if topic or max_turns:
+    if topic or max_turns or no_human:
         async def _orchestrate():
             await asyncio.sleep(1.0)
             if topic:
@@ -518,6 +628,10 @@ async def _run_session(
                 elif floor._director_uri and not floor._showrunner_uri:
                     await asyncio.sleep(0.2)  # let topic envelope reach all agent queues
                     await floor.grant_to(floor._director_uri)
+            if no_human and not topic:
+                first_uri = floor._orchestrator_uri or floor._director_uri or next(iter(floor.active_agents), None)
+                if first_uri:
+                    await floor.grant_to(first_uri)
             if max_turns:
                 # Poll history and stop when turn count is reached
                 while floor.history.__len__() < max_turns:
@@ -530,11 +644,9 @@ async def _run_session(
         tasks.append(_orchestrate())
 
     try:
-        await asyncio.gather(*tasks, return_exceptions=True)
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        pass
+        await session.run(*tasks)
     finally:
-        floor.stop()
+        await session.close()
         renderer.show_system_event("Conversation ended. Goodbye!")
 
 
@@ -557,6 +669,8 @@ def _create_breakout_agent(spec_str: str, bus: MessageBus, conversation_id: str,
     max_retries_m = re.search(r"-max-retries\s+(\d+)", spec_str)
 
     provider = provider_m.group(1) if provider_m else "hf"
+    from ofp_playground.agents.llm.base import BaseLLMAgent
+    agent: BaseLLMAgent | None
     name = name_m.group(1) if name_m else "BreakoutAgent"
     system = system_m.group(1).strip() if system_m else f"You are {name}, an AI assistant."
     model_ov = model_m.group(1) if model_m else None
@@ -626,19 +740,30 @@ async def _spawn_llm_agent(
     registry: AgentRegistry,
     renderer: TerminalRenderer,
     settings: Settings,
-    model_override: Optional[str] = None,
-    max_tokens_override: Optional[int] = None,
-    timeout_override: Optional[float] = None,
-    max_retries_override: int = 0,
+    model_override: str | None = None,
+    max_tokens_override: int | None = None,
+    timeout_override: float | None = None,
+    max_retries_override: int | None = None,
     web_renderer=None,
-) -> None:
+) -> BasePlaygroundAgent:
     """Spawn and register an LLM agent."""
-    agent = None
+    name = name.strip()
+    if not name:
+        raise ValueError("Agent name must not be empty")
+    if any(n.casefold() == name.casefold() for n in floor.active_agents.values()):
+        raise ValueError(f"Agent {name!r} already exists")
+    description = _resolve_agent_slug(description)
+    agent: BasePlaygroundAgent | None = None
 
-    if agent_type in ("anthropic", "claude") or agent_type.startswith(("anthropic:", "claude:")):
+    if agent_type == "demo" or agent_type.startswith("demo:"):
+        from ofp_playground.agents.demo import DemoAgent
+
+        agent = DemoAgent(name=name, synopsis=description, bus=bus, conversation_id=floor.conversation_id,
+                          mode=agent_type.split(":", 1)[1] if ":" in agent_type else "normal")
+    elif agent_type in ("anthropic", "claude") or agent_type.startswith(("anthropic:", "claude:")):
         api_key = settings.get_anthropic_key()
         if not api_key:
-            api_key = click.prompt(f"Enter Anthropic API key for {name}", hide_input=True)
+            raise ValueError("Configure the Anthropic API key before adding an agent")
 
         task = agent_type.split(":", 1)[1] if ":" in agent_type else "text-generation"
 
@@ -688,12 +813,12 @@ async def _spawn_llm_agent(
             renderer.show_system_event(
                 f"Unknown Anthropic task: {task}. Use anthropic for text-generation, image-to-text, orchestrator, or code-generation."
             )
-            return
+            raise ValueError(f"Unsupported agent type/task: {agent_type}")
 
     elif agent_type in ("openai", "gpt") or agent_type.startswith(("openai:", "gpt:")):
         api_key = settings.get_openai_key()
         if not api_key:
-            api_key = click.prompt(f"Enter OpenAI API key for {name}", hide_input=True)
+            raise ValueError("Configure the OpenAI API key before adding an agent")
 
         task = agent_type.split(":", 1)[1] if ":" in agent_type else "text-generation"
 
@@ -763,12 +888,12 @@ async def _spawn_llm_agent(
             renderer.show_system_event(
                 f"Unknown OpenAI task: {task}. Use OpenAI for text-generation, text-to-image, text-to-video, image-to-text, orchestrator, or code-generation."
             )
-            return
+            raise ValueError(f"Unsupported agent type/task: {agent_type}")
 
     elif agent_type in ("google", "gemini") or agent_type.startswith(("google:", "gemini:")):
         api_key = settings.get_google_key()
         if not api_key:
-            api_key = click.prompt(f"Enter Google API key for {name}", hide_input=True)
+            raise ValueError("Configure the Google API key before adding an agent")
 
         task = agent_type.split(":", 1)[1] if ":" in agent_type else "text-generation"
 
@@ -848,19 +973,19 @@ async def _spawn_llm_agent(
             renderer.show_system_event(
                 f"Unknown Google task: {task}. Use google for text-generation, text-to-image, image-to-text, text-to-music, text-to-video, orchestrator, or code-generation."
             )
-            return
+            raise ValueError(f"Unsupported agent type/task: {agent_type}")
 
     elif agent_type in ("huggingface", "hf") or agent_type.startswith(("huggingface:", "hf:")):
         api_key = settings.get_huggingface_key()
         if not api_key:
-            api_key = click.prompt(f"Enter HuggingFace API key for {name}", hide_input=True)
+            raise ValueError("Configure the HuggingFace API key before adding an agent")
 
         # Extract task type from compound agent_type string (e.g. "hf:text-to-image")
         task = agent_type.split(":", 1)[1] if ":" in agent_type else "text-generation"
 
         if task == "text-to-image":
-            from ofp_playground.agents.llm.image import ImageAgent
             from ofp_playground.agents.llm.image import DEFAULT_MODEL as DEFAULT_IMAGE_MODEL
+            from ofp_playground.agents.llm.image import ImageAgent
             agent = ImageAgent(
                 name=name,
                 style=description,
@@ -870,8 +995,8 @@ async def _spawn_llm_agent(
                 model=model_override or DEFAULT_IMAGE_MODEL,
             )
         elif task == "text-to-video":
-            from ofp_playground.agents.llm.video import VideoAgent
             from ofp_playground.agents.llm.video import DEFAULT_MODEL as DEFAULT_VIDEO_MODEL
+            from ofp_playground.agents.llm.video import VideoAgent
             agent = VideoAgent(
                 name=name,
                 style=description,
@@ -881,8 +1006,10 @@ async def _spawn_llm_agent(
                 model=model_override or DEFAULT_VIDEO_MODEL,
             )
         elif task == "image-text-to-text":
+            from ofp_playground.agents.llm.multimodal import (
+                DEFAULT_MODEL as DEFAULT_MULTIMODAL_MODEL,
+            )
             from ofp_playground.agents.llm.multimodal import MultimodalAgent
-            from ofp_playground.agents.llm.multimodal import DEFAULT_MODEL as DEFAULT_MULTIMODAL_MODEL
             # Support "model@provider" syntax, e.g. "Qwen/Qwen3.5-9B@together"
             raw_model = model_override or DEFAULT_MULTIMODAL_MODEL
             if "@" in raw_model:
@@ -899,8 +1026,10 @@ async def _spawn_llm_agent(
                 provider=mm_provider,
             )
         elif task == "image-classification":
+            from ofp_playground.agents.llm.classifier import (
+                DEFAULT_MODEL as DEFAULT_CLASSIFIER_MODEL,
+            )
             from ofp_playground.agents.llm.classifier import ImageClassificationAgent
-            from ofp_playground.agents.llm.classifier import DEFAULT_MODEL as DEFAULT_CLASSIFIER_MODEL
             agent = ImageClassificationAgent(
                 name=name,
                 synopsis=description,
@@ -910,8 +1039,8 @@ async def _spawn_llm_agent(
                 model=model_override or DEFAULT_CLASSIFIER_MODEL,
             )
         elif task == "object-detection":
-            from ofp_playground.agents.llm.detector import ObjectDetectionAgent
             from ofp_playground.agents.llm.detector import DEFAULT_MODEL as DEFAULT_DETECTOR_MODEL
+            from ofp_playground.agents.llm.detector import ObjectDetectionAgent
             agent = ObjectDetectionAgent(
                 name=name,
                 synopsis=description,
@@ -921,8 +1050,8 @@ async def _spawn_llm_agent(
                 model=model_override or DEFAULT_DETECTOR_MODEL,
             )
         elif task == "image-segmentation":
-            from ofp_playground.agents.llm.segmenter import ImageSegmentationAgent
             from ofp_playground.agents.llm.segmenter import DEFAULT_MODEL as DEFAULT_SEGMENTER_MODEL
+            from ofp_playground.agents.llm.segmenter import ImageSegmentationAgent
             agent = ImageSegmentationAgent(
                 name=name,
                 synopsis=description,
@@ -932,8 +1061,8 @@ async def _spawn_llm_agent(
                 model=model_override or DEFAULT_SEGMENTER_MODEL,
             )
         elif task == "image-to-text":
-            from ofp_playground.agents.llm.ocr import OCRAgent
             from ofp_playground.agents.llm.ocr import DEFAULT_MODEL as DEFAULT_OCR_MODEL
+            from ofp_playground.agents.llm.ocr import OCRAgent
             agent = OCRAgent(
                 name=name,
                 synopsis=description,
@@ -943,8 +1072,10 @@ async def _spawn_llm_agent(
                 model=model_override or DEFAULT_OCR_MODEL,
             )
         elif task == "text-classification":
+            from ofp_playground.agents.llm.text_classifier import (
+                DEFAULT_MODEL as DEFAULT_TEXTCLS_MODEL,
+            )
             from ofp_playground.agents.llm.text_classifier import TextClassificationAgent
-            from ofp_playground.agents.llm.text_classifier import DEFAULT_MODEL as DEFAULT_TEXTCLS_MODEL
             agent = TextClassificationAgent(
                 name=name,
                 synopsis=description,
@@ -954,8 +1085,8 @@ async def _spawn_llm_agent(
                 model=model_override or DEFAULT_TEXTCLS_MODEL,
             )
         elif task == "token-classification":
-            from ofp_playground.agents.llm.ner import NERAgent
             from ofp_playground.agents.llm.ner import DEFAULT_MODEL as DEFAULT_NER_MODEL
+            from ofp_playground.agents.llm.ner import NERAgent
             agent = NERAgent(
                 name=name,
                 synopsis=description,
@@ -965,8 +1096,10 @@ async def _spawn_llm_agent(
                 model=model_override or DEFAULT_NER_MODEL,
             )
         elif task == "summarization":
+            from ofp_playground.agents.llm.summarizer import (
+                DEFAULT_MODEL as DEFAULT_SUMMARIZER_MODEL,
+            )
             from ofp_playground.agents.llm.summarizer import SummarizationAgent
-            from ofp_playground.agents.llm.summarizer import DEFAULT_MODEL as DEFAULT_SUMMARIZER_MODEL
             agent = SummarizationAgent(
                 name=name,
                 synopsis=description,
@@ -976,8 +1109,8 @@ async def _spawn_llm_agent(
                 model=model_override or DEFAULT_SUMMARIZER_MODEL,
             )
         elif task == "showrunner":
-            from ofp_playground.agents.llm.showrunner import ShowRunnerAgent
             from ofp_playground.agents.llm.director import parse_total_parts
+            from ofp_playground.agents.llm.showrunner import ShowRunnerAgent
             total_parts = parse_total_parts(description)
             agent = ShowRunnerAgent(
                 name=name,
@@ -1007,7 +1140,7 @@ async def _spawn_llm_agent(
                 "HuggingFace code-generation is not supported. "
                 "Use anthropic:code-generation, openai:code-generation, or google:code-generation."
             )
-            return
+            raise ValueError(f"Unsupported agent type/task: {agent_type}")
         else:
             # Default: text-generation (and any other text-in/text-out tasks)
             from ofp_playground.agents.llm.huggingface import HuggingFaceAgent
@@ -1025,7 +1158,7 @@ async def _spawn_llm_agent(
     elif agent_type in ("director", "director-hf"):
         api_key = settings.get_huggingface_key()
         if not api_key:
-            api_key = click.prompt(f"Enter HuggingFace API key for {name}", hide_input=True)
+            raise ValueError("Configure the HuggingFace API key before adding an agent")
         from ofp_playground.agents.llm.director import DirectorAgent, parse_total_parts
         total_parts = parse_total_parts(description)
         agent = DirectorAgent(
@@ -1047,13 +1180,15 @@ async def _spawn_llm_agent(
             f" -type Image-Classification, -type Summarization, etc."
             f" Run 'ofp-playground agents' for the full list)"
         )
-        return
+        raise ValueError(f"Unsupported agent type/task: {agent_type}")
 
     if agent:
+        if agent.speaker_uri in floor.active_agents:
+            raise ValueError(f"Agent URI already in use: {agent.speaker_uri}")
         # Apply timeout / retry / token settings from CLI flags
         if timeout_override is not None:
             agent._timeout = timeout_override
-        if max_retries_override:
+        if max_retries_override is not None:
             agent._max_retries = max_retries_override
         if max_tokens_override and hasattr(agent, "_max_tokens"):
             agent._max_tokens = max_tokens_override
@@ -1098,17 +1233,19 @@ async def _spawn_llm_agent(
         await bus.register(agent.speaker_uri, agent.queue)
         # Send OFP-compliant InviteEvent so the agent knows it joined the floor.
         await floor.invite_agent(agent.speaker_uri, getattr(agent, "_service_url", "local://agent"))
-        asyncio.create_task(agent.run())
+        registry.start(agent)
+        return agent
+    raise ValueError(f"Unsupported agent type/task: {agent_type}")
 
 
 async def _attach_floor_callbacks(
-    floor: "FloorManager",
-    bus: "MessageBus",
-    registry: "AgentRegistry",
-    settings: "Settings",
-    renderer: "TerminalRenderer",
+    floor: FloorManager,
+    bus: MessageBus,
+    registry: AgentRegistry,
+    settings: Settings,
+    renderer: TerminalRenderer,
     web_renderer=None,
-) -> None:
+):
     """Attach spawn + breakout callbacks to the floor manager.
 
     Shared by both the terminal session (_run_session) and the web session
@@ -1118,6 +1255,16 @@ async def _attach_floor_callbacks(
     renderer     — TerminalRenderer used for terminal notifications
     web_renderer — optional GradioRenderer; if set, events also go to the web UI
     """
+
+    from ofp_playground.session import SessionService
+
+    session = SessionService(floor, bus, registry)
+    if os.environ.get("OFP_STATUS_DISABLED") != "1":
+        await session.enable_status()
+        if session.status_problem:
+            renderer.show_system_event(session.status_problem)
+    # Agents may publish immediately during setup, before floor.run() is scheduled.
+    await bus.register(floor.speaker_uri, floor._queue)
 
     def _notify(msg: str) -> None:
         renderer.show_system_event(msg)
@@ -1162,14 +1309,14 @@ async def _attach_floor_callbacks(
 
     async def _floor_breakout_callback(
         topic: str,
-        policy: "FloorPolicy",
+        policy: FloorPolicy,
         max_rounds: int,
         agent_specs: list[str],
-    ) -> "tuple[str, object]":
+    ) -> tuple[str, object]:
         from ofp_playground.floor.breakout import (
+            build_compact_notification,
             run_breakout_session,
             save_breakout_artifact,
-            build_compact_notification,
         )
 
         nonlocal _breakout_session_count
@@ -1183,7 +1330,7 @@ async def _attach_floor_callbacks(
                 if agent:
                     agents.append(agent)
             except Exception as e:
-                logger.error("Breakout agent creation failed for '%s': %s", spec_str, e)
+                logger.exception("Breakout agent creation failed for '%s': see traceback", spec_str)
                 _notify(f"Breakout agent failed: {e}")
 
         if len(agents) < 2:
@@ -1198,6 +1345,7 @@ async def _attach_floor_callbacks(
             max_rounds=max_rounds,
             parent_renderer=renderer,
             trace_collector=floor.trace_collector,
+            status_runtime=session.status,
         )
 
         artifact_path = save_breakout_artifact(result, floor.output.breakout)
@@ -1221,16 +1369,16 @@ async def _attach_floor_callbacks(
 
     async def _floor_coding_session_callback(
         topic: str,
-        policy: "FloorPolicy",
+        policy: FloorPolicy,
         max_rounds: int,
         agent_specs: list[str],
         required_context_files: list[str],
         initial_todo_items: list[str],
-    ) -> "tuple[str, object]":
+    ) -> tuple[str, object]:
         from ofp_playground.floor.coding_session import (
+            build_coding_session_notification,
             run_coding_session,
             save_coding_session_artifact,
-            build_coding_session_notification,
         )
 
         nonlocal _coding_session_count
@@ -1244,7 +1392,7 @@ async def _attach_floor_callbacks(
                 if agent:
                     agents.append(agent)
             except Exception as e:
-                logger.error("Coding session agent creation failed for '%s': %s", spec_str, e)
+                logger.exception("Coding session agent creation failed for '%s': see traceback", spec_str)
                 _notify(f"Coding session agent failed: {e}")
 
         if len(agents) < 1:
@@ -1265,6 +1413,7 @@ async def _attach_floor_callbacks(
             initial_todo_items=initial_todo_items,
             parent_renderer=renderer,
             trace_collector=floor.trace_collector,
+            status_runtime=session.status,
         )
 
         artifact_path = save_coding_session_artifact(result, floor.output.breakout)
@@ -1283,17 +1432,143 @@ async def _attach_floor_callbacks(
         return compact, artifact_path
 
     floor._coding_session_callback = _floor_coding_session_callback
+    return session
 
 
 @click.group()
+@click.version_option(version=__version__)
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
 @click.pass_context
 def main(ctx: click.Context, verbose: bool):
     """OFP Playground — Multi-party OFP conversation tool."""
+    # Windows uses a legacy code page for redirected streams. Runtime labels
+    # include Unicode; keep pipes usable without changing an interactive console.
+    if sys.platform == "win32":
+        for stream in (sys.stdout, sys.stderr):
+            if not stream.isatty() and hasattr(stream, "reconfigure"):
+                if os.environ.get("PYTHONIOENCODING"):
+                    stream.reconfigure(errors="backslashreplace")
+                else:
+                    stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     _load_dotenv()
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
     _configure_logging(verbose)
+
+
+def _print_status(snapshot: dict) -> None:
+    from rich.table import Table
+
+    from ofp_playground.renderer.status_text import status_rows
+
+    table = Table(title=f"ASP observations · cursor {snapshot.get('cursor', '?')}", expand=True)
+    keys = ("name", "lifecycle", "health", "tasks", "floors", "governance", "source", "seen")
+    for key in keys:
+        table.add_column(key.title(), overflow="fold")
+    for row in status_rows(snapshot):
+        table.add_row(*(row[key] for key in keys))
+    console.print(table)
+    if not snapshot.get("agents"):
+        click.echo("No registered ASP observations. Uninstrumented agents remain unknown.")
+
+
+async def _read_status(*, data_dir: Path, port: int, watch: bool, interval: float,
+                       count: int | None, agent: str | None, as_json: bool) -> None:
+    import httpx
+
+    from ofp_playground.status.client import connect_local_service
+
+    try:
+        connection = await connect_local_service(data_dir=data_dir, port=port, auto_start=False)
+    except (httpx.HTTPError, OSError, RuntimeError, ValueError) as exc:
+        raise click.ClickException("ASP service unavailable; status is unknown. Start a session or ofp-status-server first.") from exc
+    seen = 0
+    try:
+        while True:
+            try:
+                snapshot = await connection.snapshot()
+            except (httpx.HTTPError, OSError, RuntimeError) as exc:
+                if as_json:
+                    click.echo(json.dumps({"available": False, "stale": True, "problem": "status-service-unavailable"}))
+                raise click.ClickException("ASP observation lost; previous observations are stale.") from exc
+            if agent:
+                snapshot["agents"] = [entry for entry in snapshot.get("agents", [])
+                                      if entry["agentId"] == agent or entry.get("name", "").casefold() == agent.casefold()]
+            if as_json:
+                click.echo(json.dumps({"available": True, **snapshot}, ensure_ascii=True))
+            else:
+                _print_status(snapshot)
+            seen += 1
+            if not watch or (count is not None and seen >= count):
+                return
+            await asyncio.sleep(interval)
+    finally:
+        await connection.close()
+
+
+@main.command("status")
+@click.option("--watch", is_flag=True, help="Poll until Ctrl+C; a lost connection exits with an error.")
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON object per observation (NDJSON with --watch).")
+@click.option("--agent", help="Filter by exact instance ID or display name.")
+@click.option("--interval", default=2.0, type=click.FloatRange(0.25, 60), show_default=True)
+@click.option("--count", type=click.IntRange(1), help="Stop after this many observations when watching.")
+@click.option("--port", default=8787, type=click.IntRange(1, 65535), show_default=True)
+@click.option("--data-dir", default=Path.home() / ".ofp-playground" / "status", type=click.Path(path_type=Path), show_default=True)
+def status(watch: bool, as_json: bool, agent: str | None, interval: float, count: int | None,
+           port: int, data_dir: Path) -> None:
+    """Read authenticated ASP observations without starting a new conversation."""
+    try:
+        asyncio.run(_read_status(data_dir=data_dir, port=port, watch=watch, interval=interval,
+                                 count=count, agent=agent, as_json=as_json))
+    except KeyboardInterrupt:
+        pass
+
+
+def _print_personas(search: str, as_json: bool, preview: bool) -> None:
+    from ofp_playground.agents import library
+
+    entries = [entry for slug, entry in library.load().items()
+               if search.casefold() in (slug + " " + entry["display_name"]).casefold()]
+    if as_json:
+        click.echo(json.dumps([{key: entry[key] for key in ("slug", "display_name", "category", *(["content"] if preview else []))}
+                               for entry in entries], ensure_ascii=True))
+    else:
+        for entry in entries:
+            click.echo(f"{entry['slug']} — {entry['display_name']}")
+            if preview:
+                click.echo(entry["content"] + "\n")
+        if not entries:
+            click.echo("No matching personas. Try ofp personas without a search term.")
+
+
+@main.command("personas")
+@click.argument("search", default="")
+@click.option("--json", "as_json", is_flag=True)
+@click.option("--preview", is_flag=True, help="Show the resolved SOUL.md prompt before using it.")
+def personas(search: str, as_json: bool, preview: bool) -> None:
+    """Search the installed persona library by name or category/slug."""
+    _print_personas(search, as_json, preview)
+
+
+def _print_models(settings: Settings, as_json: bool) -> None:
+    from ofp_playground.agents.llm.model_catalog import MODEL_CATALOG
+
+    configured = {key: value for key, value in asdict(settings.defaults).items() if "model" in key}
+    if as_json:
+        click.echo(json.dumps({"configuredDefaults": configured, "catalog": list(MODEL_CATALOG),
+                               "availability": "not-checked"}, ensure_ascii=True))
+    else:
+        click.echo("Configured model defaults (availability depends on your provider account):")
+        for key, value in configured.items():
+            click.echo(f"{key}: {value}")
+        click.echo("Catalog choices (custom provider IDs are also accepted): " + ", ".join(MODEL_CATALOG))
+
+
+@main.command("models")
+@click.option("--json", "as_json", is_flag=True)
+def models(as_json: bool) -> None:
+    """Show configured provider model choices; never prints API keys."""
+    _print_models(Settings.load(), as_json)
 
 
 @main.command()
@@ -1352,7 +1627,7 @@ def main(ctx: click.Context, verbose: bool):
 )
 @click.pass_context
 def start(ctx: click.Context, policy: str, agents: tuple, remotes: tuple,
-          no_human: bool, topic: Optional[str], max_turns: Optional[int],
+          no_human: bool, topic: str | None, max_turns: int | None,
           human_name: str, show_floor_events: bool, verbose: bool):
     """Start an interactive OFP conversation session.
 
@@ -1373,12 +1648,9 @@ def start(ctx: click.Context, policy: str, agents: tuple, remotes: tuple,
         ))
     except KeyboardInterrupt:
         console.print("\n[dim]Session interrupted.[/dim]")
-    finally:
-        # Background threads (HTTP calls to LLM APIs) may still be running.
-        # os._exit skips atexit/thread-join to avoid the Python 3.13
-        # "Exception ignored on threading shutdown" traceback on Ctrl+C.
-        import os
-        os._exit(0)
+        ctx.exit(130)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @main.command()
@@ -1394,15 +1666,15 @@ def start(ctx: click.Context, policy: str, agents: tuple, remotes: tuple,
               help="Stop automatically after N utterances")
 @click.option("--human-name", default="User",
               help="Display name for the human participant (default: User)")
-@click.option("--host", default="0.0.0.0", help="Host to bind (default: 0.0.0.0)")
+@click.option("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
 @click.option("--port", default=7860, type=int, help="Port to listen on (default: 7860)")
 @click.option("--share", is_flag=True, default=False,
               help="Create a public Gradio share link")
 @click.option("--verbose", "-v", is_flag=True, default=False,
               help="Enable debug logging")
 @click.pass_context
-def web(ctx: click.Context, policy: str, agents: tuple, topic: Optional[str],
-        no_human: bool, max_turns: Optional[int], human_name: str,
+def web(ctx: click.Context, policy: str, agents: tuple, topic: str | None,
+        no_human: bool, max_turns: int | None, human_name: str,
         host: str, port: int, share: bool, verbose: bool):
     """Start the OFP Playground Gradio web UI.
 
@@ -1423,9 +1695,9 @@ def web(ctx: click.Context, policy: str, agents: tuple, topic: Optional[str],
         ))
     except KeyboardInterrupt:
         console.print("\n[dim]Web session interrupted.[/dim]")
-    finally:
-        import os
-        os._exit(0)
+        ctx.exit(130)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @main.command("canvas")
@@ -1458,9 +1730,11 @@ def canvas(
     Press Run to start the session.
     """
     import sys
-    import threading
     import webbrowser
     from pathlib import Path
+
+    if host not in {"localhost", "127.0.0.1", "::1"}:
+        raise click.ClickException("Canvas controls support loopback hosts only in this local profile")
 
     repo_root = Path(__file__).resolve().parents[2]
     if str(repo_root) not in sys.path:
@@ -1468,6 +1742,7 @@ def canvas(
 
     try:
         import uvicorn
+
         from canvas.backend.main import build_app
     except ImportError as exc:
         raise click.ClickException(
@@ -1500,17 +1775,21 @@ async def _run_web_session(
     agent_specs: tuple[str, ...],
     settings: Settings,
     verbose: bool,
-    topic: Optional[str] = None,
+    topic: str | None = None,
     no_human: bool = False,
-    max_turns: Optional[int] = None,
+    max_turns: int | None = None,
     human_name: str = "User",
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     port: int = 7860,
     share: bool = False,
 ) -> None:
     """Run the web UI session (Gradio + OFP bus in the same process)."""
-    from ofp_playground.renderer.gradio_ui import launch_web_session
+    from ofp_playground.status.server import is_loopback
+
+    if not is_loopback(host) or share:
+        raise ValueError("The web control UI supports loopback only; public sharing needs an authenticated deployment profile.")
     from ofp_playground.agents.registry import AgentRegistry
+    from ofp_playground.renderer.gradio_ui import launch_web_session
 
     bus = MessageBus()
     floor = FloorManager(bus, policy=policy, renderer=None)
@@ -1526,7 +1805,7 @@ async def _run_web_session(
     web_renderer.add_system_event(f"Conversation started (ID: {floor.conversation_id[:8]}...)")
 
     human = None
-    tasks = [floor.run()]
+    tasks = []
     agent_display_names: list[str] = []
 
     if not no_human:
@@ -1538,29 +1817,32 @@ async def _run_web_session(
         )
         floor.register_agent(human.speaker_uri, human.name)
         registry.register(human)
-        tasks.append(human.run())
         agent_display_names.append(human_name)
         _human_uris.add(human.speaker_uri)
         web_renderer.add_agent(human.speaker_uri, human_name)
 
     # Attach spawn + breakout callbacks (same backbone as terminal session)
     term_renderer = TerminalRenderer(console, show_floor_events=False)
-    await _attach_floor_callbacks(floor, bus, registry, settings, term_renderer, web_renderer=web_renderer)
+    session = await _attach_floor_callbacks(floor, bus, registry, settings, term_renderer, web_renderer=web_renderer)
+    if human is not None:
+        registry.start(human)
 
     # Spawn pre-configured LLM agents
     for spec in agent_specs:
         try:
-            agent_type, name, description, model_ov, max_tokens_ov, *_ = _parse_agent_spec(spec)
+            agent_type, name, description, model_ov, max_tokens_ov, timeout_ov, retries_ov = _parse_agent_spec(spec)
             await _spawn_llm_agent(
                 agent_type, name, description, floor, bus, registry,
-                term_renderer, settings, model_ov, max_tokens_ov,
+                term_renderer, settings, model_ov, max_tokens_ov, timeout_ov, retries_ov,
                 web_renderer=web_renderer,
             )
             agent_display_names.append(name)
         except Exception as e:
             console.print(f"[red]Failed to spawn agent: {e}[/red]")
+            await session.close()
+            raise ValueError(f"Could not start agent: {e}") from e
 
-    if topic or max_turns:
+    if topic or max_turns or no_human:
         async def _orchestrate():
             await asyncio.sleep(1.5)
             if topic:
@@ -1575,6 +1857,10 @@ async def _run_web_session(
                 elif floor._director_uri and not floor._showrunner_uri:
                     await asyncio.sleep(0.2)
                     await floor.grant_to(floor._director_uri)
+            if no_human and not topic:
+                first_uri = floor._orchestrator_uri or floor._director_uri or next(iter(floor.active_agents), None)
+                if first_uri:
+                    await floor.grant_to(first_uri)
             if max_turns:
                 while floor.history.__len__() < max_turns:
                     await asyncio.sleep(2.0)
@@ -1594,13 +1880,52 @@ async def _run_web_session(
             await _spawn_llm_agent(
                 at, name, desc, floor, bus, registry,
                 term_renderer, settings, model_ov, maxtok_ov,
+                timeout_ov, maxretry_ov,
                 web_renderer=web_renderer,
             )
         except Exception as e:
             web_renderer.add_system_event(f"Spawn failed: {e}")
+            raise
 
-    def _launch():
-        launch_web_session(
+    async def _web_remove_fn(uri: str, mode: str) -> dict:
+        result = await session.remove(uri, mode=mode)
+        web_renderer.add_system_event(f"Remove {floor.active_agents.get(uri, uri)}: {result.get('outcome', 'requested')}")
+        return result
+
+    async def _web_governance_fn(uri: str, value: str) -> dict:
+        result = await session.set_governance(uri, value)
+        web_renderer.add_system_event(f"Governance {value}: {result.get('outcome', 'requested')}")
+        return result
+
+    async def _web_input_fn(text: str) -> None:
+        if human is None or human.speaker_uri not in floor.active_agents or floor._stop_event.is_set():
+            raise ValueError("Human input is no longer available")
+        await session.enqueue_input(human.speaker_uri, text)
+        web_renderer.add_user_input(human.name, text)
+
+    async def _refresh_status():
+        while True:
+            tracked = {**session.participants, **(session.status.agents if session.status else {})}
+            participants = {agent.instance_id: agent.name for agent in tracked.values()}
+            choices = [(agent.name + (" (removed)" if uri not in floor.active_agents else ""), uri)
+                       for uri, agent in tracked.items()]
+            snapshot = None
+            available = False
+            problem = session.status_problem
+            if session.status:
+                try:
+                    snapshot = await session.status.connection.snapshot()
+                    snapshot["agents"] = [agent for agent in snapshot.get("agents", []) if agent["agentId"] in participants]
+                    available = True
+                    problem = session.status.connection.problem
+                except (httpx.HTTPError, OSError, RuntimeError, ValueError):
+                    problem = "Status service unavailable; retained values are stale"
+            web_renderer.update_status(snapshot, participants, choices, available=available, problem=problem)
+            await asyncio.sleep(1)
+
+    async def _serve():
+        launcher = asyncio.create_task(asyncio.to_thread(
+            launch_web_session,
             floor=floor,
             bus=bus,
             human_agent=human,
@@ -1612,18 +1937,42 @@ async def _run_web_session(
             share=share,
             gradio_renderer=web_renderer,
             spawn_fn=_web_spawn_fn,
-        )
-        console.print(f"[green]Web UI ready → http://{host}:{port}[/green]")
+            remove_fn=_web_remove_fn,
+            governance_fn=_web_governance_fn,
+            input_fn=_web_input_fn if human else None,
+            stop_fn=floor.stop,
+        ))
+        demo = None
+        try:
+            demo = await asyncio.shield(launcher)
+            console.print(f"[green]Web UI ready → http://{host}:{port}[/green]")
+            await floor._stop_event.wait()
+        finally:
+            # to_thread cannot cancel a launch already in progress. Join it and
+            # close the returned server even when stop arrives during startup.
+            if demo is None:
+                demo = await launcher
+            await asyncio.to_thread(demo.close)
 
-    # Launch Gradio in a thread so it doesn't block the event loop
-    threading.Thread(target=_launch, daemon=True).start()
+    async def _observe():
+        from ofp_playground.renderer.gradio_ui import _drain_output_queue
+
+        observer_uri = "tag:ofp-playground.local,2025:web-observer"
+        queue = human.output_queue if human is not None else asyncio.Queue()
+        if human is None:
+            await bus.register(observer_uri, queue)
+        try:
+            await _drain_output_queue(queue, web_renderer)
+        finally:
+            if human is None:
+                await bus.unregister(observer_uri)
+
+    tasks.extend([_serve(), _observe(), _refresh_status()])
 
     try:
-        await asyncio.gather(*tasks, return_exceptions=True)
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        pass
+        await session.run(*tasks)
     finally:
-        floor.stop()
+        await session.close()
 
 
 @main.command()
@@ -1700,5 +2049,6 @@ def validate(envelope_file: str):
         console.print(f"  Sender: {envelope.sender.speakerUri if envelope.sender else 'N/A'}")
         console.print(f"  Events: {len(envelope.events or [])}")
     except Exception as e:
+        logger.exception("Operation failed at an application error boundary")
         console.print(f"[red]✗ Invalid envelope: {e}[/red]")
         sys.exit(1)

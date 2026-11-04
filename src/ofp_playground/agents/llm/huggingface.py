@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Optional
 
 from ofp_playground.agents.llm.base import BaseLLMAgent
 from ofp_playground.bus.message_bus import MessageBus
@@ -27,7 +26,7 @@ class HuggingFaceAgent(BaseLLMAgent):
         api_key: str,
         model: str = DEFAULT_MODEL,
         relevance_filter: bool = True,
-        max_tokens: Optional[int] = None,
+        max_tokens: int | None = None,
     ):
         super().__init__(
             name=name,
@@ -64,7 +63,7 @@ class HuggingFaceAgent(BaseLLMAgent):
 
         return await loop.run_in_executor(None, _call)
 
-    async def _generate_response(self, participants: list[str]) -> Optional[str]:
+    async def _generate_response(self, participants: list[str]) -> str | None:
         import asyncio
         loop = asyncio.get_event_loop()
         system = self._build_system_prompt(participants)

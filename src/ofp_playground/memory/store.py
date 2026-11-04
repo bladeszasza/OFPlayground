@@ -10,7 +10,6 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Optional
 
 
 class MemoryCategory(str, Enum):
@@ -95,8 +94,8 @@ class MemoryStore:
 
     def recall(
         self,
-        category: Optional[str | MemoryCategory] = None,
-        key: Optional[str] = None,
+        category: str | MemoryCategory | None = None,
+        key: str | None = None,
     ) -> list[MemoryEntry]:
         """Return entries filtered by category and/or key (case-insensitive substring)."""
         results = self._entries

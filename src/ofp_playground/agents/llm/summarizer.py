@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 from .perception_base import BaseTextPerceptionAgent
 
 DEFAULT_MODEL = "facebook/bart-large-cnn"

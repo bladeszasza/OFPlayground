@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from ofp_playground.config.settings import Settings
 
 
-def build_spawn_tools(settings: "Settings") -> list[dict]:
+def build_spawn_tools(settings: Settings) -> list[dict]:
     """Return Anthropic-format tool definitions for available agent types.
 
     This is the canonical format; use to_*_tools() helpers to convert

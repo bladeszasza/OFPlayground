@@ -4,11 +4,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from openai import OpenAI
 import re
 from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from openfloor import Capability, Envelope, Identification, Manifest, SupportedLayers
 
@@ -148,7 +151,7 @@ def write_texture_sidecar(image_path: Path, mime: str) -> str:
             f"new THREE.TextureLoader().load(TEXTURES['{key}'])"
         )
     except Exception as _err:
-        logger.warning("Could not write textures_data.js for %s: %s", image_path, _err)
+        logger.warning('Could not write textures_data.js for %s: see traceback', image_path, exc_info=True)
         return ""
 IMAGE_URI_TEMPLATE = "tag:ofp-playground.local,2025:image-{name}"
 DEFAULT_VISION_MODEL = "gpt-4o-mini"
@@ -178,17 +181,19 @@ class OpenAIImageAgent(BasePlaygroundAgent):
         self._style = style
         self._model = model or DEFAULT_MODEL
         self._api_key = api_key
-        self._client = None
+        self._client: OpenAI | None = None
         self._has_floor = False
-        self._last_text: Optional[str] = None
-        self._raw_prompt: Optional[str] = None
-        self._last_directive_text: Optional[str] = None  # full DIRECTIVE text incl. STORY SO FAR
+        self._last_text: str | None = None
+        self._raw_prompt: str | None = None
+        self._last_directive_text: str | None = None  # full DIRECTIVE text incl. STORY SO FAR
         self._output_dir: Path = OUTPUT_DIR
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
     def _build_manifest(self) -> Manifest:
         return Manifest(
             identification=Identification(
+                organization="OFP Playground",
+                synopsis=f"Local agent: {self._name}",
                 speakerUri=self._speaker_uri,
                 serviceUrl=self._service_url,
                 conversationalName=self._name,
@@ -234,8 +239,8 @@ class OpenAIImageAgent(BasePlaygroundAgent):
         return f"{self._style}, {scene}"
 
     async def _generate_image(
-        self, prompt: str, previous_response_id: Optional[str] = None
-    ) -> tuple[Optional[Path], Optional[str]]:
+        self, prompt: str, previous_response_id: str | None = None
+    ) -> tuple[Path | None, str | None]:
         """Generate one image and save it to disk.
 
         Returns ``(path, response_id)`` where *response_id* is set only for
@@ -245,7 +250,7 @@ class OpenAIImageAgent(BasePlaygroundAgent):
         """
         loop = asyncio.get_event_loop()
 
-        def _call() -> tuple[bytes, Optional[str]]:
+        def _call() -> tuple[bytes, str | None]:
             client = self._get_client()
             clean_prompt, reference_paths = _extract_reference_image_paths(prompt)
             existing_reference_paths = [path for path in reference_paths if path.exists()]
@@ -290,14 +295,14 @@ class OpenAIImageAgent(BasePlaygroundAgent):
                         self._name,
                         self._model,
                     )
-                kwargs: dict = dict(
-                    model=self._model,
-                    input=clean_prompt,
-                    tools=[{"type": "image_generation",
+                kwargs: dict = {
+                    "model": self._model,
+                    "input": clean_prompt,
+                    "tools": [{"type": "image_generation",
                             "output_format": "jpeg",
                             "output_compression": 80,
                             "background": "opaque"}],
-                )
+                }
                 if previous_response_id:
                     kwargs["previous_response_id"] = previous_response_id
                 response = client.responses.create(**kwargs)
@@ -310,7 +315,7 @@ class OpenAIImageAgent(BasePlaygroundAgent):
                     raise RuntimeError("OpenAI image generation returned no image data")
                 return base64.b64decode(image_data[0]), response.id
 
-        async def _coro() -> tuple[bytes, Optional[str]]:
+        async def _coro() -> tuple[bytes, str | None]:
             return await loop.run_in_executor(None, _call)
 
         try:
@@ -324,8 +329,8 @@ class OpenAIImageAgent(BasePlaygroundAgent):
             path = self._output_dir / f"{ts}_{self._name.lower()}.{ext}"
             path.write_bytes(image_bytes)
             return path, response_id
-        except Exception as e:
-            logger.error("[%s] OpenAI image generation error: %s", self._name, e)
+        except Exception:
+            logger.exception('[%s] OpenAI image generation error: see traceback', self._name)
             return None, None
 
     async def _handle_utterance(self, envelope: Envelope) -> None:
@@ -383,8 +388,8 @@ class OpenAIImageAgent(BasePlaygroundAgent):
                 # (e.g. "Generate 3 textures: (1) ... (2) ... (3) ...")
                 # but the image API generates one image per call.
                 sub_prompts = _split_compound_prompt(prompt)
-                last_path: Optional[Path] = None
-                last_response_id: Optional[str] = None
+                last_path: Path | None = None
+                last_response_id: str | None = None
                 for sub_prompt in sub_prompts:
                     if last_response_id is not None:
                         # Responses API path: chain via previous_response_id —
@@ -398,8 +403,8 @@ class OpenAIImageAgent(BasePlaygroundAgent):
                     last_path, last_response_id = await self._generate_and_deliver(
                         sub_prompt, previous_response_id=last_response_id
                     )
-        except Exception as e:
-            logger.error("[%s] Floor grant error: %s", self._name, e)
+        except Exception:
+            logger.exception('[%s] Floor grant error: see traceback', self._name)
         finally:
             self._has_floor = False
             self._last_text = None
@@ -408,8 +413,8 @@ class OpenAIImageAgent(BasePlaygroundAgent):
             await self.yield_floor()
 
     async def _generate_and_deliver(
-        self, prompt: str, previous_response_id: Optional[str] = None
-    ) -> tuple[Optional[Path], Optional[str]]:
+        self, prompt: str, previous_response_id: str | None = None
+    ) -> tuple[Path | None, str | None]:
         """Generate a single image, save it, and send an utterance.
 
         Returns ``(path, response_id)`` — both are forwarded from
@@ -459,10 +464,7 @@ class OpenAIImageAgent(BasePlaygroundAgent):
                 f"new THREE.TextureLoader().load(TEXTURES['{key}'])"
             )
         except Exception as _b64_err:
-            logger.warning(
-                "[%s] Could not write textures_data.js: %s",
-                self._name, _b64_err,
-            )
+            logger.warning('[%s] Could not write textures_data.js: see traceback', self._name, exc_info=True)
         await self.send_envelope(
             self._make_media_utterance_envelope(
                 text_desc, "image", mime, str(path.resolve())
@@ -481,6 +483,7 @@ class OpenAIImageAgent(BasePlaygroundAgent):
                 self._has_floor = False
             elif event_type == "invite":
                 from openfloor import Event, To
+
                 from ofp_playground.bus.message_bus import FLOOR_MANAGER_URI
                 accept_envelope = Envelope(
                     sender=self._make_sender(),
@@ -506,10 +509,10 @@ class OpenAIImageAgent(BasePlaygroundAgent):
                 try:
                     envelope = await asyncio.wait_for(self._queue.get(), timeout=1.0)
                     await self._dispatch(envelope)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
-                except Exception as e:
-                    logger.error("[%s] error: %s", self._name, e, exc_info=True)
+                except Exception:
+                    logger.exception('[%s] error: see traceback', self._name)
         finally:
             self._running = False
 
@@ -538,13 +541,15 @@ class OpenAIVisionAgent(BaseLLMAgent):
         # Override URI from BaseLLMAgent's llm- prefix to vision- prefix
         self._speaker_uri = VISION_URI_TEMPLATE.format(name=name.lower().replace(" ", "-"))
         self._service_url = f"local://vision-{name.lower()}"
-        self._client = None
-        self._pending_image: Optional[tuple[str, str]] = None  # (file_path, mime_type)
-        self._pending_image_context: Optional[str] = None
+        self._client: OpenAI | None = None
+        self._pending_image: tuple[str, str] | None = None  # (file_path, mime_type)
+        self._pending_image_context: str | None = None
 
     def _build_manifest(self) -> Manifest:
         return Manifest(
             identification=Identification(
+                organization="OFP Playground",
+                synopsis=f"Local agent: {self._name}",
                 speakerUri=self._speaker_uri,
                 serviceUrl=self._service_url,
                 conversationalName=self._name,
@@ -565,7 +570,7 @@ class OpenAIVisionAgent(BaseLLMAgent):
             self._client = OpenAI(api_key=self._api_key)
         return self._client
 
-    def _extract_image_from_envelope(self, envelope: Envelope) -> Optional[tuple[str, str]]:
+    def _extract_image_from_envelope(self, envelope: Envelope) -> tuple[str, str] | None:
         """Return (file_path, mime_type) for the first image feature found in envelope."""
         for event in (envelope.events or []):
             de = getattr(event, "dialogEvent", None)
@@ -597,7 +602,7 @@ class OpenAIVisionAgent(BaseLLMAgent):
     async def _quick_check(self, prompt: str) -> str:
         return "YES"  # Vision agent always analyzes images when present
 
-    async def _generate_response(self, participants: list[str]) -> Optional[str]:
+    async def _generate_response(self, participants: list[str]) -> str | None:
         if not self._pending_image:
             return None
 
@@ -608,8 +613,8 @@ class OpenAIVisionAgent(BaseLLMAgent):
             image_bytes = Path(path).read_bytes()
             b64 = base64.b64encode(image_bytes).decode()
             data_url = f"data:{mime_type};base64,{b64}"
-        except Exception as e:
-            logger.error("[%s] Could not read image %s: %s", self._name, path, e)
+        except Exception:
+            logger.exception('[%s] Could not read image %s: see traceback', self._name, path)
             return None
 
         loop = asyncio.get_event_loop()

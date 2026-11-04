@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass
@@ -22,8 +21,8 @@ class ArtifactFeature:
     """
     feature_key: str
     mime_type: str
-    value: Optional[str] = None       # inline text value
-    value_url: Optional[str] = None   # file path or URL
+    value: str | None = None       # inline text value
+    value_url: str | None = None   # file path or URL
 
 
 @dataclass
@@ -48,7 +47,7 @@ class Utterance:
         return f.value or ""
 
     @property
-    def primary_media(self) -> Optional[ArtifactFeature]:
+    def primary_media(self) -> ArtifactFeature | None:
         """First non-text feature, if any (image, video, etc.)."""
         for key, feat in self.features.items():
             if key != "text":
@@ -56,7 +55,7 @@ class Utterance:
         return None
 
     @classmethod
-    def from_text(cls, speaker_uri: str, speaker_name: str, text: str) -> "Utterance":
+    def from_text(cls, speaker_uri: str, speaker_name: str, text: str) -> Utterance:
         """Factory for plain text utterances."""
         return cls(
             speaker_uri=speaker_uri,
@@ -78,7 +77,7 @@ class Utterance:
         text_description: str,
         image_path: str,
         mime_type: str = "image/png",
-    ) -> "Utterance":
+    ) -> Utterance:
         """Factory for image utterances with text fallback description."""
         return cls(
             speaker_uri=speaker_uri,
@@ -104,7 +103,7 @@ class Utterance:
         speaker_name: str,
         text_description: str,
         video_path: str,
-    ) -> "Utterance":
+    ) -> Utterance:
         """Factory for video utterances with text fallback description."""
         return cls(
             speaker_uri=speaker_uri,

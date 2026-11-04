@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from rich.console import Console
-from rich.text import Text
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 # Color palette for agents
 AGENT_COLORS = [
@@ -40,7 +39,7 @@ ICONS = {
 class TerminalRenderer:
     """Renders OFP conversations to the terminal using Rich."""
 
-    def __init__(self, console: Optional[Console] = None, show_floor_events: bool = False):
+    def __init__(self, console: Console | None = None, show_floor_events: bool = False):
         self._console = console or Console()
         self._agent_colors: dict[str, str] = {}
         self._color_idx = 0
@@ -119,7 +118,7 @@ class TerminalRenderer:
         )
         self._console.print(Panel(table, style="blue"))
 
-    def show_agents_table(self, agents: dict[str, str], floor_holder: Optional[str] = None) -> None:
+    def show_agents_table(self, agents: dict[str, str], floor_holder: str | None = None) -> None:
         table = Table(title="Active Agents", show_header=True)
         table.add_column("Name", style="bold")
         table.add_column("URI", style="dim")
@@ -150,7 +149,7 @@ class TerminalRenderer:
             style="green",
         ))
 
-    def show_manuscript(self, text: str, filepath: Optional[str] = None) -> None:
+    def show_manuscript(self, text: str, filepath: str | None = None) -> None:
         """Display the final assembled manuscript in a panel."""
         word_count = len(text.split())
         title = f"[bold green]Final Manuscript[/bold green] [dim]({word_count} words)[/dim]"

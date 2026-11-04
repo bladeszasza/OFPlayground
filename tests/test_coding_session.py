@@ -94,7 +94,14 @@ class TestSafeResolve:
     def test_symlink_escape_rejected(self, tmp_path):
         """Symlinks pointing outside sandbox are rejected."""
         link_path = tmp_path / "escape"
-        link_path.symlink_to("/tmp")
+        outside = tmp_path.parent / f"{tmp_path.name}-outside"
+        outside.mkdir()
+        try:
+            link_path.symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                pytest.skip("Windows requires Developer Mode or symlink privileges")
+            raise
         with pytest.raises(ValueError, match="escapes"):
             _safe_resolve(tmp_path, "escape/test")
 

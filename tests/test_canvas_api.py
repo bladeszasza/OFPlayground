@@ -4,11 +4,13 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from canvas.backend.main import build_app
+from canvas.backend.main import _safe_media_path
+from fastapi import HTTPException
 
 
 @pytest.fixture
 def app():
-    return build_app()
+    return build_app(authenticate=False)
 
 
 async def test_session_start_and_stop(app) -> None:
@@ -84,6 +86,41 @@ async def test_models_list_returns_grouped_providers(app) -> None:
     assert data["huggingface"] == []
 
 
+async def test_persona_preview_uses_same_resolver_as_runtime(app) -> None:
+    from ofp_playground.cli import _resolve_agent_slug
+
+    reference = "@development/code-reviewer. Focus on lifecycle ownership."
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/agents/preview", json={"reference": reference})
+        assert response.status_code == 200
+        assert response.json()["prompt"] == _resolve_agent_slug(reference)
+        assert response.headers["cache-control"] == "no-store"
+        for invalid in ["/etc/passwd", "@../../private", "@missing/not-real"]:
+            assert (await client.post("/agents/preview", json={"reference": invalid})).status_code == 422
+
+
+async def test_provider_configuration_exposes_choices_without_credentials(monkeypatch) -> None:
+    from ofp_playground.config.settings import Settings
+
+    settings = Settings()
+    settings.api_keys.openai = "TEST-SECRET-DO-NOT-EXPOSE"
+    settings.defaults.llm_model_openai = "custom/account-model"
+    monkeypatch.setattr(Settings, "load", lambda: settings)
+    app = build_app(authenticate=False)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/session/configuration")
+    assert response.status_code == 200
+    assert "TEST-SECRET" not in response.text
+    assert response.headers["cache-control"] == "no-store"
+    result = response.json()
+    assert result["availability"] == "not-checked"
+    assert result["providers"]["openai"]["credentialConfigured"] is True
+    assert result["providers"]["openai"]["defaults"]["text-generation"] == "custom/account-model"
+    assert "text-to-music" not in result["providers"]["openai"]["tasks"]
+    assert "code-generation" not in result["providers"]["huggingface"]["tasks"]
+    assert result["providers"]["demo"]["credentialConfigured"] is True
+
+
 async def test_agent_type_field_accepted_in_start(app) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         payload = {
@@ -120,7 +157,7 @@ async def test_agent_type_field_accepted_in_start(app) -> None:
 
 
 async def test_session_initial_returns_none_when_no_config() -> None:
-    app = build_app()
+    app = build_app(authenticate=False)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/session/initial")
     assert response.status_code == 200
@@ -134,7 +171,7 @@ async def test_session_initial_returns_config_when_provided() -> None:
         ],
         "edges": [],
     }
-    app = build_app(initial_config=config)
+    app = build_app(initial_config=config, authenticate=False)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/session/initial")
     assert response.status_code == 200
@@ -144,7 +181,7 @@ async def test_session_initial_returns_config_when_provided() -> None:
 
 
 async def test_presets_list_returns_list() -> None:
-    app = build_app()
+    app = build_app(authenticate=False)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/presets/list")
     assert response.status_code == 200
@@ -160,7 +197,7 @@ async def test_presets_list_returns_list() -> None:
 
 
 async def test_presets_get_returns_config() -> None:
-    app = build_app()
+    app = build_app(authenticate=False)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/presets/_fixture_test")
     assert response.status_code == 200
@@ -169,7 +206,23 @@ async def test_presets_get_returns_config() -> None:
 
 
 async def test_presets_get_unknown_returns_404() -> None:
-    app = build_app()
+    app = build_app(authenticate=False)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/presets/does_not_exist")
     assert response.status_code == 404
+
+
+@pytest.mark.parametrize("path", [
+    "../result-backup/secret.txt", "..\\result-backup\\secret.txt",
+    "nested/../../secret.txt", "C:\\private\\secret.txt", "C:secret.txt",
+    "\\\\server\\share\\secret.txt", "/etc/passwd",
+])
+def test_media_path_rejects_cross_platform_escapes(path):
+    with pytest.raises(HTTPException) as exc:
+        _safe_media_path(path)
+    assert exc.value.status_code == 400
+
+
+def test_media_path_accepts_descendant(tmp_path, monkeypatch):
+    monkeypatch.setattr("canvas.backend.main.RESULT_DIR", tmp_path)
+    assert _safe_media_path("session\\images\\one.png") == tmp_path / "session/images/one.png"

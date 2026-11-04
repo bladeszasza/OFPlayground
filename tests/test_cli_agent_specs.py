@@ -164,3 +164,6 @@ def test_build_canvas_config_agent_type_subtype():
     director = next(n for n in config["nodes"] if n["data"].get("name") == "Director")
     assert director["data"]["agentType"] == "orchestrator"
     assert director["data"]["provider"] == "anthropic"
+def test_retry_zero_is_distinct_from_unspecified_default():
+    assert cli._parse_agent_spec('-provider demo -name Worker -max-retries 0')[-1] == 0
+    assert cli._parse_agent_spec('demo:Worker:Synthetic worker')[-1] is None
