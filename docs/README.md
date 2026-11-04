@@ -9,7 +9,7 @@ Use the [root README](../README.md) for installation, configuration, Canvas buil
 1. Install an editable source checkout using the root README. Include the `canvas` extra and build `canvas/frontend` for the visual interface.
 2. Run the [provider-free ASP showcase](asp.md#provider-free-showcase), then configure one provider for a small live conversation.
 3. Use [personas](agents-library.md) or the [four-expert panel](expert-agents.md) through CLI specifications or the Canvas picker. Initial and dynamically added agents share prompt resolution.
-4. Inspect the session trace and artifacts. Turn limits are polling stop conditions, not hard cost or time budgets.
+4. Inspect the session trace and artifacts. Turn limits stop the floor on the N-th agent utterance; they are not hard cost or time budgets.
 
 ## Guides and references
 
@@ -19,7 +19,8 @@ Use the [root README](../README.md) for installation, configuration, Canvas buil
 | [ASP and showcase](asp.md) | Status semantics, provenance, independent service, controls and synthetic failure walkthrough |
 | [Dependency review](dependencies.md) | Lockfiles, supported toolchains, SDK profile and optional Gradio security exception |
 | [OFP integration](ofp-protocol.md) | Envelope/event concepts and historical examples; verify constructors against the installed SDK |
-| [Floor policies](floor-policies.md) | Intended modes; see the assessment for actual scheduling limitations |
+| [Floor policies](floor-policies.md) | Implemented scheduling rules, invariants and SHOWRUNNER delegation |
+| [Interfaces](interfaces.md) | How every session option and runtime control maps across CLI, web and Canvas |
 | [Agents](agents.md) | Taxonomy and provider/task implementations; defaults do not prove current provider availability |
 | [Persona library](agents-library.md) | `SOUL.md` structure, slugs, loading API |
 | [Expert panel](expert-agents.md) | Protocol, repository, communication, and emergent-communication specialists; launch commands |
@@ -39,7 +40,7 @@ These points were checked against source on 2026-11-01. Prefer them over conflic
 - **Configuration:** `start`, `web` and `canvas` prefer TOML key values over environment values. The CLI loads `.env` without overwriting the environment.
 - **Persona listing:** `ofp-playground agents` prints provider/task help. Use `ofp-playground personas SEARCH --preview` for actual slugs and resolved instructions.
 - **Validation:** `ofp-playground validate envelope.json` validates an envelope file, not credentials or overall configuration.
-- **Policies:** queued requests precede round-robin fallback; moderated mode can auto-grant an idle floor. Neither name proves strict scheduling or human approval.
+- **Policies (updated 2026-11-04):** round-robin is a strict ring (requests no longer precede the rotation) and moderated mode waits for the human chair when one is present. See [floor policies](floor-policies.md); the older statement to the contrary describes the pre-fix code.
 - **Coding:** Anthropic and Google have coding implementations alongside OpenAI. Hugging Face `code-generation` is unsupported; descriptions calling every non-OpenAI implementation a stub are stale.
 - **Canvas:** the checkout includes a frontend bundle. Rebuild after source changes; Vite proxies the session, agent/model, preset, remote-list, media and trace endpoints. Graph edges do not configure backend routing.
 - **Examples:** Bash showcase scripts are experiments with different configurations and provider requirements, not validated production pipelines or interchangeable CLI/web editions.

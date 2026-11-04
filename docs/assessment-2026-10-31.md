@@ -64,4 +64,6 @@ The baseline findings above describe the pre-change repository and remain histor
 
 My assessment: the project now has a credible foundation for a local research workbench. Its strongest idea is making OFP conversation behavior observable through a separate ASP status model, with actual enforcement distinguished from a status assertion. It is still experimental software. CLI/provider construction and the Canvas application remain large modules, real provider/account compatibility has not been paid-tested, source assets are not bundled into a complete wheel, and the optional Gradio dependency has an unresolved security constraint. Those deserve focused follow-up before public or production use; another broad feature expansion would make maintenance harder.
 
+A second follow-up on 2026-11-04 addresses the remaining "policy names overstate guarantees" finding and SHOWRUNNER delegation stalls (strict round-robin, human-chaired moderation, silent-worker recovery, parallel fan-out, CLI/web/Canvas parity); see the [implementation ledger](implementation-status.md#floor-delegation-and-interface-parity--2026-11-04).
+
 On 2026-11-04 the user supplied a Git author identity and authorized the source push. The release convention combines the verified work in v0.3.0; the earlier proposed 0.2.0 checkpoint remains untagged. Source tagging does not imply package publication.

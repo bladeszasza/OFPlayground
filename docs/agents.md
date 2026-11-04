@@ -94,9 +94,11 @@ Interactive terminal agent. Reads stdin, writes to terminal via `TerminalRendere
 
 **File**: `src/ofp_playground/agents/web_human.py`
 
-Gradio-backed human agent. Uses two async queues:
+Human agent for the Gradio web UI and the canvas. Uses two async queues:
 - `input_queue`: UI → agent (user text)
 - `output_queue`: agent → UI (envelopes for Gradio rendering)
+
+Given `floor_policy` (the web and canvas sessions pass the session policy), it takes turns exactly like the terminal `HumanAgent`. It requests the floor under SEQUENTIAL and takes its ring turn under ROUND_ROBIN. Any floor it is granted is released after it speaks or `pass_turn()`s (`/pass`). `notice_callback` lets the UI announce "your turn".
 
 ---
 
@@ -144,8 +146,8 @@ All text agents extend this. Provides:
 | `_append_to_context(name, text)` | Add utterance to conversation history |
 | `_handle_utterance(envelope)` | Process incoming messages, request floor if relevant |
 | `_handle_grant_floor()` | Generate response when floor is granted |
-| `_check_relevance()` | Optional LLM-based filtering ("should I respond?") |
-| Relevance filter | Configurable via `relevance_filter` param (default: True) |
+| `_check_relevance()` | LLM-based "should I respond?" check, run before requesting the floor under FREE_FOR_ALL only |
+| Relevance filter | Configurable via `relevance_filter` param (default: True); the agent's `floor_policy` (set at spawn) gates it |
 
 ---
 

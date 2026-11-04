@@ -28,14 +28,21 @@ Grant the floor to a named agent with a task description.
 [ASSIGN Writer]: Synthesize the breakout room output into a polished script
 ```
 
-FloorManager actions:
+FloorManager actions (`_dispatch_assignment` / `_build_directive`):
 1. Resolve `Writer` → URI via `_resolve_agent_uri_by_name()`
-2. Build directive text: `[DIRECTIVE for Writer]: task description`
-3. Inject manuscript context: `--- STORY SO FAR ---\n{accumulated text}`
-4. Inject breakout results if pending
-5. Inject session memory summary
-6. Send as private utterance to Writer
-7. Grant floor to Writer
+2. Collect the task. It may span several lines, up to the next directive line. Expand `read_artifact('slug')` references inline.
+3. Build `[DIRECTIVE for Writer]: task`. For **text** workers, append the compact phase-artifact index, the sandbox note, the session-memory summary and, once, the pending breakout transcript. **Media** generators and **remote** agents get the bare task, because those blocks would end up inside the image/music prompt.
+4. Send the directive privately, **then** grant the floor, so the worker reads its task before it speaks.
+
+The worker's reply returns the floor to the orchestrator. If the worker yields **without** replying (error, timeout, empty answer, drained), the orchestrator still gets the floor back, plus `[SYSTEM] Writer yielded the floor without delivering any output…`. Utterances from anyone other than the assigned worker, such as a human interjection or a remote agent answering a broadcast, are kept as context and never count as the delivery.
+
+#### [ASSIGN_PARALLEL A, B, …]: task
+
+Fan the same task out to several agents at once. Each gets a normal `[DIRECTIVE for X]` (plus a note naming its peers) and a grant. The orchestrator regains the floor only after **every** member delivered or failed. `[ACCEPT]` then stores all answers, each labelled `[Name]:`.
+
+```
+[ASSIGN_PARALLEL Critic, Editor]: Review chapter 3 and list the three biggest problems.
+```
 
 #### [ACCEPT]
 
@@ -60,9 +67,9 @@ Ask an agent to redo their work with feedback.
 ```
 
 FloorManager actions:
-1. Resolve agent URI
-2. Send rejection reason as directive
-3. Re-grant floor to rejected agent
+1. Resolve agent URI and mark it as the assigned worker; the rejected draft can no longer be `[ACCEPT]`ed.
+2. Send `Revision requested — reason` **and** `Original task: …` as the directive. Media agents get the original prompt first and the notes after it, because they build their prompt from the first line.
+3. Grant the floor, after the directive. Previously the grant went first and the agent regenerated before it saw the reason.
 
 #### [KICK Name]
 

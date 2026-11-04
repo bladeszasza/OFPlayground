@@ -134,11 +134,13 @@ Orchestrator utterance "[ASSIGN Writer]: Write the script"
   → FloorManager._handle_orchestrator_directives()
     ├── Parse "[ASSIGN Writer]"
     ├── Resolve Writer URI via _resolve_agent_uri_by_name()
-    ├── Send [DIRECTIVE for Writer]: ... as private utterance
-    ├── Inject manuscript context ("--- STORY SO FAR ---")
-    ├── Grant floor to Writer
+    ├── _build_directive(): task + artifact index, sandbox note, memory,
+    │   pending breakout output (text workers only; media/remote: bare task)
+    ├── Send [DIRECTIVE for Writer]: ... as private utterance (FIRST)
+    ├── Grant floor to Writer (SECOND)
     └── Writer generates response → yields floor
         → FloorManager re-grants to orchestrator
+        (also when Writer yields WITHOUT output: [SYSTEM] note + re-grant)
 ```
 
 ## Lifecycle
@@ -154,9 +156,9 @@ Orchestrator utterance "[ASSIGN Writer]: Write the script"
    - Name registry, manifest registry, memory store attached
    - Agent registered with floor + registry + bus
    - `InviteEvent` sent, `agent.run()` started as task
-5. Topic seeded via `_seed_topic()` if `--topic` provided
-6. Memory store seeded with goal
-7. Orchestrator/Director granted initial floor
+5. `session.kickoff()` (shared by CLI, web and canvas): memory store seeded with the goal and the topic seeded if `--topic` was provided. A start-up floor held by the human is released so agents can answer.
+6. First grant from `FloorManager.kickoff_target()`: orchestrator → director → nobody (MODERATED chair) → first ring member (ROUND_ROBIN) → first agent (autonomous, no topic)
+7. `floor.max_turns` set from `--max-turns`
 
 ### Session shutdown
 

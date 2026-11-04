@@ -89,7 +89,7 @@ ofp-playground start --no-human --policy round_robin --max-turns 8 --topic "Desi
 ofp-playground web --host 127.0.0.1 --agent "openai:Assistant:Help the human with the topic."
 ```
 
-`--max-turns` polls conversation history. It is not a hard token, cost, or wall-clock budget. Early completion now joins and closes session tasks; cancelling a local wait cannot retract an already submitted provider job.
+`--max-turns` stops the floor on the N-th agent utterance (counted by the floor manager, so any N works). It is not a hard token, cost, or wall-clock budget. Early completion now joins and closes session tasks; cancelling a local wait cannot retract an already submitted provider job.
 
 ## Build and open Canvas
 
@@ -146,15 +146,15 @@ The runtime offers tools based on configured key presence. That does not validat
 
 ## Floor policies
 
-These application policies sit above the OFP message layer. Their names describe intended modes; implementation details matter:
+These application policies sit above the OFP message layer. [Floor policies](docs/floor-policies.md) documents the implemented rules; `tests/test_floor_delegation.py` pins them:
 
 | Policy | Current behavior |
 |---|---|
-| `sequential` | Grants an idle floor to a requester, then services queued requests. |
-| `round_robin` | Uses rotation after queued requests; not an unconditional strict cycle. |
-| `moderated` | Supports explicit grants, but also auto-grants requests when idle. |
-| `free_for_all` | Grants requests immediately, allowing overlapping participation. |
-| `showrunner_driven` | Adds orchestrator assignments and accept/reject workflow. |
+| `sequential` | Grants an idle floor to a requester, then services queued requests FIFO. |
+| `round_robin` | Strict ring: the yielder's successor speaks next; requests never jump the ring. A director opens and a show runner closes each round. |
+| `moderated` | With a human, the human chairs: requests queue until the chair addresses an agent by name or uses `/grant`. Without a human, FIFO. |
+| `free_for_all` | Grants requests immediately (overlapping participation); LLM agents run a relevance check first. |
+| `showrunner_driven` | Orchestrator assignments, parallel fan-out and accept/reject workflow; the floor returns to the orchestrator even when a worker fails silently. |
 
 Only a holder can yield; free-for-all tracks concurrent holders. Removing a participant clears queue/rotation membership and transfers a departing holder's floor. Graceful removal excludes new work, drains the active call for up to the chosen timeout, then falls back to force cancellation. Quarantine removes and cancels the local instance; clearing its assertion does not restart it or repeat a provider call.
 

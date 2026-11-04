@@ -1,16 +1,32 @@
 # Floor Policies
 
-OFP Playground implements **5 floor control policies** that determine how agents take turns speaking. Each policy is defined in `FloorPolicy` (an enum) and executed by `FloorController`.
+OFP Playground implements **5 floor control policies** that decide who may speak. The policy is a `FloorPolicy` enum; the pure state machine is `FloorController` (`src/ofp_playground/floor/policy.py`) and the round / delegation logic lives in `FloorManager` (`src/ofp_playground/floor/manager.py`).
+
+This page describes implemented behavior (verified by `tests/test_floor_delegation.py`, `tests/test_floor_controller.py` and `tests/test_session_lifecycle.py`). The same rules apply in `start`, `web` and `canvas` because all three use the same floor manager and the shared `session.kickoff()`.
 
 ## Policy Summary
 
-| Policy | Turn Taking | Best For |
-|--------|-------------|----------|
-| [SEQUENTIAL](#sequential) | FIFO queue — agents speak in the order they request | Panel Q&A, step-by-step reviews |
-| [ROUND_ROBIN](#round_robin) | Strict rotation through all agents | Multi-chapter stories, debates |
-| [MODERATED](#moderated) | Floor granted manually; requests are queued | Expert panels, code reviews |
-| [FREE_FOR_ALL](#free_for_all) | Any agent can speak anytime | Brainstorming, rapid ideation |
-| [SHOWRUNNER_DRIVEN](#showrunner_driven) | Orchestrator assigns tasks; workers only speak when assigned | Production pipelines, creative production |
+| Policy | Who speaks next | Best For |
+|--------|-----------------|----------|
+| [SEQUENTIAL](#sequential) | First requester, then FIFO queue | Panel Q&A, step-by-step reviews |
+| [ROUND_ROBIN](#round_robin) | Strict ring successor; director opens / show runner closes a round | Multi-chapter stories, debates |
+| [MODERATED](#moderated) | Whoever the human chair calls on (FIFO without a human) | Expert panels, chaired reviews |
+| [FREE_FOR_ALL](#free_for_all) | Anyone, immediately (relevance-filtered) | Brainstorming, rapid ideation |
+| [SHOWRUNNER_DRIVEN](#showrunner_driven) | The worker the orchestrator assigned; then the orchestrator | Production pipelines, creative production |
+
+## Invariants shared by every policy
+
+- **Stale yields are ignored.** A `yieldFloor` from an agent that does not hold the floor never advances it, so two agents can't both end up holding it.
+- **A grant revokes the previous holder** (except under FREE_FOR_ALL, where holders are concurrent).
+- **Removing an agent hands its floor on**. That applies to removals from `/kick`, the canvas remove button, `[KICK]`, `bye` and quarantine. If the agent was an in-flight SHOWRUNNER worker, the orchestrator gets the floor back with a `[SYSTEM]` note.
+- **Turn limit:** `--max-turns N` / `maxTurns` stops the floor on the N-th agent utterance. It is counted by the floor manager itself, so `N > 100` works. Conversation history only keeps the last 100 entries. It is a stop condition, not a cost or time budget.
+- **First grant (`FloorManager.kickoff_target`)** is the same in every UI:
+  1. The orchestrator if there is one.
+  2. Otherwise the director if there is one.
+  3. Nobody under MODERATED with a human chair.
+  4. The first ring member under ROUND_ROBIN.
+  5. The first agent of an autonomous session that has no topic.
+  6. Otherwise nobody, so agents request the floor in response to the topic.
 
 ---
 
@@ -20,45 +36,11 @@ OFP Playground implements **5 floor control policies** that determine how agents
 ofp-playground start --policy sequential --agent "anthropic:Alice:..." --agent "openai:Bob:..."
 ```
 
-### Behavior
+- The first agent to request an idle floor gets it; later requests wait in a **FIFO queue** and are served one at a time as each speaker yields. Agents re-request after each utterance they see, so a conversation proceeds in roughly round-like order.
+- **Human** (terminal, web and canvas alike): requests the floor at start, so it opens the conversation. After others speak it queues for its next turn and yields after sending. `/pass` releases a turn without speaking. When a topic is seeded the human's start-up turn is released first so agents can answer the topic.
+- A director / show runner, if present, is granted at round boundaries. A round is every text participant except media, perception and vision agents and the director / show runner themselves.
 
-- Agents speak in the order they **request the floor** (FIFO queue).
-- When an agent yields, the next agent in the queue gets the floor.
-- If the queue is empty, the floor is free (next requester gets it immediately).
-- The human agent (if present) requests the floor after others speak and yields after sending.
-
-### FloorController Logic
-
-```
-request_floor(uri):
-  if no current holder → grant immediately (return True)
-  else → add to queue (return False)
-
-yield_floor(uri):
-  if queue not empty → pop next → grant (return next_uri)
-  else → clear holder (return None)
-```
-
-### Example
-
-```bash
-bash examples/sequential_code_review.sh "def process(u): exec(u)"
-```
-
-Three specialist reviewers (Security → Performance → Style) each speak once per human turn.
-See [examples/sequential_code_review.sh](../examples/sequential_code_review.sh).
-
-### When to Use
-
-- Turn-based discussions where order matters
-- Structured Q&A sessions
-- Any scenario where agents should respond one at a time without a fixed rotation
-
-### Cross-references
-
-- Works with `HumanAgent` — human holds floor, speaks, yields, re-queues
-- Works with `DirectorAgent` — director requests floor like any other agent
-- **Not compatible** with `OrchestratorAgent` (use SHOWRUNNER_DRIVEN instead)
+Example: `bash examples/sequential_code_review.sh "def process(u): exec(u)"`. Three reviewers each speak once per human turn.
 
 ---
 
@@ -68,104 +50,30 @@ See [examples/sequential_code_review.sh](../examples/sequential_code_review.sh).
 ofp-playground start --policy round_robin --agent "anthropic:Alice:..." --agent "openai:Bob:..."
 ```
 
-### Behavior
+- **Strict ring.** Participants rotate in join order. When the holder yields, the floor goes to its ring successor. Requests from ring members are never queued, so they can't jump the ring; they only bootstrap an idle floor.
+- **Round boundaries:** a round is `[director] → every ring member → [show runner]`. Director and show runner are **not** ring members; the floor manager grants them explicitly. Ring wraps without either inject a short `[FLOOR — Round N complete]` recap for LLM agents.
+- **Silent turns** (an agent yields without speaking) just pass to the successor. If a full cycle passes with nobody speaking (e.g. only perception agents with nothing to analyse), the floor **parks** instead of spinning forever. The next request, for example after new human input, restarts it.
+- **Humans are ring members.** When it's their turn they are told (“Floor granted to you … or /pass”) and the ring waits for them. This now holds in the web UI and canvas too; previously the web/canvas human never yielded and deadlocked the ring.
+- First grant: the director if present, otherwise the first non-human ring member when a topic was seeded, otherwise the first ring member.
 
-- Agents take turns in a **fixed rotation** order (the order they were registered).
-- Each agent speaks exactly once per round.
-- After all agents have spoken, the round counter increments.
-- If a `DirectorAgent` is present, it speaks **first** each round (granted by FloorManager at round boundaries).
-- If a `ShowRunnerAgent` is present, it speaks **last** each round (granted after all story agents have spoken).
-
-### FloorController Logic
-
-```
-request_floor(uri):
-  if uri is next in rotation and no current holder → grant (return True)
-  else → queue (return False)
-
-yield_floor(uri):
-  advance rotation pointer → grant to next in rotation
-```
-
-### Round Tracking (FloorManager)
-
-The FloorManager tracks which agents have spoken each round via `_agents_spoken_this_round`. When all text agents (excluding media, floor-manager, director, showrunner) have spoken:
-
-1. Round counter increments
-2. `_agents_spoken_this_round` resets
-3. Director or ShowRunner is granted the floor for next-round instructions
-
-### Example
-
-```bash
-bash examples/round_robin_novel.sh "a gothic horror mystery" 5
-```
-
-Five-part collaborative story (any genre): Director sets scene beats → 3 voice agents (Protagonist, Mentor, Antagonist) write → ShowRunner synthesises into canon.
-See [examples/round_robin_novel.sh](../examples/round_robin_novel.sh).
-
-### When to Use
-
-- Multi-chapter collaborative stories (each agent writes a section)
-- Structured debates (each participant gets equal airtime)
-- Sequential creative workflows where all agents contribute each round
-
-### Cross-references
-
-- **DirectorAgent**: Speaks first, emits `[SCENE]` and per-agent `[AgentName]: instruction` directives
-- **ShowRunnerAgent**: Speaks last, synthesizes all utterances into canonical `STORY SO FAR`, emits directives for next round
-- `_inject_round_summary()`: FloorManager injects a summary of recent utterances into the director context to prevent divergence
-- **Not compatible with** `OrchestratorAgent` (use SHOWRUNNER_DRIVEN)
+Example: `bash examples/round_robin_novel.sh "a gothic horror mystery" 5`. Director sets scene beats, the three voices write in order, and the ShowRunner synthesises canon.
 
 ---
 
 ## MODERATED
 
 ```bash
-ofp-playground start --policy moderated --agent "anthropic:Alice:..." --agent "openai:Bob:..."
+ofp-playground start --policy moderated --human-name Chair --agent "anthropic:MacroAnalyst:..." ...
 ```
 
-### Behavior
+- **With a human in the session, the human is the chair.** Agent requests are queued and **never auto-granted**. The chair gives the floor by:
+  - **addressing agents by name**, e.g. `"RiskAnalyst and MacroAnalyst, your view?"`. Agents are called on in the order they are mentioned; the first speaks now and the rest follow as each yields. Called-on agents are served before agents that merely requested.
+  - **`/grant NAME`** in the terminal, the web chat box, the canvas human input, or `POST /session/floor/grant/{name}`.
+- `/floor` shows the holder and the waiting queue (called-on agents first).
+- **Without a human**, the floor manager is the moderator and serves requests FIFO, the same as SEQUENTIAL.
+- Nobody is granted at start-up when a chair is present; the chair opens.
 
-- Floor is granted **manually** by the moderator (in practice, the FloorManager or human).
-- Agents request the floor; requests are queued.
-- The moderator decides when and to whom to grant the floor.
-- `grant_to(uri)` and `revoke_floor()` are the primary control methods.
-
-### FloorController Logic
-
-```
-request_floor(uri):
-  always queued (return False) — moderator must explicitly grant
-
-grant_to(uri):
-  if no current holder → grant to uri
-  else → revoke current, then grant to uri
-
-revoke_floor():
-  clear current holder
-```
-
-### Example
-
-```bash
-bash examples/moderated_investment_committee.sh "NVDA — is the AI capex cycle sustainable?"
-```
-
-Four investment analysts (Macro, Fundamentals, Risk, ESG) queue their requests but only speak when you call on them.
-See [examples/moderated_investment_committee.sh](../examples/moderated_investment_committee.sh).
-
-### When to Use
-
-- Expert panels where a moderator controls the discussion
-- Code review sessions where a lead asks specific agents to comment
-- Any scenario where human control over turn-taking is desired
-
-### Cross-references
-
-- The human agent acts as implicit moderator via `/floor` command visibility
-- FloorManager can `grant_to()` programmatically for orchestrated scenarios
-- Works with all agent types
+Example: `bash examples/moderated_investment_committee.sh "NVDA — is the AI capex cycle sustainable?"`
 
 ---
 
@@ -175,42 +83,11 @@ See [examples/moderated_investment_committee.sh](../examples/moderated_investmen
 ofp-playground start --policy free_for_all --agent "anthropic:Alice:..." --agent "openai:Bob:..."
 ```
 
-### Behavior
+- Every floor request is granted immediately; several agents can hold the floor concurrently (`floor_holders`). There is no queue or rotation.
+- **Relevance filter:** before requesting the floor in response to a regular utterance, LLM agents ask themselves “should I contribute?” with a short `_check_relevance()` call. Directives, director scenes and grants bypass it. It runs only under FREE_FOR_ALL, because the other policies give every agent a turn by design. Disable it with `defaults.relevance_filter = false` in `~/.ofp-playground/config.toml`. Providers without a cheap check (e.g. scripted demo agents) always speak.
+- The human never needs the floor and can speak at any time.
 
-- **Any agent can speak at any time** — floor requests are immediately granted.
-- Multiple agents may be speaking simultaneously (in practice, they're async and messages interleave).
-- No queue, no rotation, no blocking.
-- The human always has implicit floor access.
-
-### FloorController Logic
-
-```
-request_floor(uri):
-  grant immediately (return True)
-
-yield_floor(uri):
-  clear holder (return None) — no next-in-line concept
-```
-
-### Example
-
-```bash
-bash examples/free_for_all_brainstorm.sh "the most transformative opportunity in AI right now"
-```
-
-Four product personas (UserResearcher, PM, Designer, DevilsAdvocate) jump in whenever they have a relevant take — often 2–3 at once.
-See [examples/free_for_all_brainstorm.sh](../examples/free_for_all_brainstorm.sh).
-
-### When to Use
-
-- Brainstorming sessions where rapid-fire ideas are valuable
-- Unstructured conversations where agents self-regulate
-- Relevance-filtered setups where agents only speak when they have something to say
-
-### Cross-references
-
-- **Relevance filter** (`BaseLLMAgent._check_relevance()`): Especially useful in FREE_FOR_ALL to prevent agents from speaking on every message. Each agent asks itself "should I respond?" before requesting the floor.
-- Works with all agent types except orchestrators
+Example: `bash examples/free_for_all_brainstorm.sh "the most transformative opportunity in AI right now"`
 
 ---
 
@@ -223,77 +100,39 @@ ofp-playground start --policy showrunner_driven \
   --agent "hf:text-to-image:Painter:Generate storyboard images."
 ```
 
-### Behavior
-
-- One agent is registered as the **orchestrator** — it controls the entire session.
-- Workers **never** speak unless explicitly assigned via `[ASSIGN]` directives.
-- The orchestrator always gets the floor back after a worker finishes.
-- Media outputs (images, video, audio) are **auto-accepted** — no explicit `[ACCEPT]` needed.
-- Accepted text outputs accumulate into a shared `_manuscript`.
+- One **orchestrator** controls the session and gets the first grant. Workers only take the floor when assigned, and only the assigned worker's (or parallel batch's) requests are honoured.
+- **The floor always returns to the orchestrator:**
+  - after the assigned worker's output (media is auto-accepted);
+  - after the worker **yields without any output** (error, timeout, empty reply). The orchestrator also receives `[SYSTEM] X yielded the floor without delivering any output…`. Previously this stalled the session.
+  - after an in-flight worker is removed by an operator;
+  - after a breakout / coding session completes;
+  - when the orchestrator itself yields without assigning. It gets an escalating recovery nudge, and the session stops after 8 idle turns.
+- **Unsolicited output does not count as delivery.** A human interjecting, a remote agent answering a broadcast or a late reply is kept as conversation context. It never clears the in-flight assignment or hands the orchestrator a second turn. Human input does wake an idle orchestrator.
 
 ### Orchestrator Directives
 
-| Directive | Action | Example |
-|-----------|--------|---------|
-| `[ASSIGN Name]: task` | Grant floor to agent with task description | `[ASSIGN Writer]: Write scene 1` |
-| `[ACCEPT]` | Accept last worker's output into manuscript | `[ACCEPT]` |
-| `[REJECT Name]: reason` | Ask agent to redo with feedback | `[REJECT Writer]: needs more dialogue` |
-| `[KICK Name]` | Remove agent from session (UninviteEvent) | `[KICK SlowAgent]` |
-| `[SPAWN spec]` | Create a new agent dynamically | `[SPAWN -provider openai -name Editor -system "Edit text"]` |
-| `[SKIP Name]: reason` | Record skip in manuscript, move on | `[SKIP Painter]: API unavailable` |
-| `[BREAKOUT ...]` | Spin up a temporary sub-floor session | See [Orchestration Patterns](orchestration.md) |
-| `[TASK_COMPLETE]` | End the session, output manuscript | `[TASK_COMPLETE]` |
+| Directive | Action |
+|-----------|--------|
+| `[ASSIGN Name]: task` | Private `[DIRECTIVE for Name]` (task may span lines), then the grant |
+| `[ASSIGN_PARALLEL A, B]: task` | Same task to several agents at once (fan-out); the orchestrator regains the floor once **all** delivered or failed |
+| `[ACCEPT]` / `[ACCEPT prose]` | Append the last delivery (all parallel answers, labelled) to the manuscript and save a phase artifact |
+| `[ACCEPT plan\|image\|music\|audio\|video]` | Save the phase artifact only; keep the manuscript clean |
+| `[REJECT Name]: reason` | Revision directive (reason **and** the original task), then the grant; the rejected draft can't be `[ACCEPT]`ed afterwards |
+| `[KICK Name]` | OFP `uninvite` and removal |
+| `[SPAWN spec]` | Create a new agent (follow with `[ASSIGN NewName]`) |
+| `[SKIP Name]: reason` | Record a skip in the manuscript and move on |
+| `[STORE_MEMORY key]: content` | Write a decision to session memory |
+| `[BREAKOUT …]` / `[CODING_SESSION …]` | Temporary sub-floor; **not** started in the same turn as an `[ASSIGN]` (the orchestrator is told why) |
+| `[TASK_COMPLETE]` | Save the manuscript and end the session |
 
-### Directive Flow
+### What a worker receives
 
-```
-Orchestrator: "[ASSIGN Writer]: Write the opening"
-  → FloorManager parses [ASSIGN Writer]
-  → Resolves Writer URI
-  → Sends private directive: "[DIRECTIVE for Writer]: Write the opening
-        --- STORY SO FAR ---
-        (accumulated manuscript)"
-  → Grants floor to Writer
+The floor manager sends the directive privately and **before** the grant, so the worker reads its task first. Then:
+- **Text workers** get the whole directive: the task, the compact phase-artifact index, the sandbox note, session memory, and (once) the latest breakout transcript.
+- **Media workers** (image / video / audio generators) get only the bare prompt. The context blocks used to leak into Lyria prompts.
+- **Remote OFP agents** get only the bare task.
 
-Writer generates response → yields floor
-  → FloorManager stores last_worker_text
-  → Re-grants floor to orchestrator
-
-Orchestrator: "[ACCEPT]"
-  → FloorManager appends last_worker_text to _manuscript
-  → Orchestrator gets next directive turn
-```
-
-### Media Auto-Accept
-
-When a media agent (image/video/audio) produces output in SHOWRUNNER_DRIVEN mode:
-1. Output is automatically accepted (appended to manuscript)
-2. Floor returns to orchestrator immediately
-3. Orchestrator receives `[auto-accepted {type} output]: {text}` in context
-4. This prevents the orchestrator from re-issuing the same `[ASSIGN]`
-
-### Example
-
-```bash
-bash examples/showcase.sh
-```
-
-Ten-chapter illustrated story pipeline: story brainstorm breakout → StoryWriter → review/cutscene breakouts → NanoBananPainter → ChapterBuilder → Composer → IndexBuilder.
-See [examples/showcase.sh](../examples/showcase.sh).
-
-### When to Use
-
-- Multi-step production pipelines (story → images → music → web page)
-- Project management scenarios
-- Any workflow where one agent coordinates multiple specialists
-
-### Cross-references
-
-- **OrchestratorAgent** variants: `AnthropicOrchestratorAgent`, `OpenAIOrchestratorAgent`, `GoogleOrchestratorAgent`, `OrchestratorAgent` (HF)
-- **Breakout sessions**: Orchestrator can call `create_breakout_session` tool → temporary sub-floor
-- **Session memory**: `MemoryStore` shared across all agents; `[REMEMBER]` directives write to it
-- **Manuscript**: Accumulated accepted outputs, saved to `result/<session>/manuscript.txt`
-- See [Orchestration Patterns](orchestration.md) for detailed pipeline examples
+See [Orchestration Patterns](orchestration.md) for pipelines and breakouts.
 
 ---
 
@@ -301,13 +140,11 @@ See [examples/showcase.sh](../examples/showcase.sh).
 
 | Feature | SEQUENTIAL | ROUND_ROBIN | MODERATED | FREE_FOR_ALL | SHOWRUNNER_DRIVEN |
 |---------|-----------|-------------|-----------|--------------|-------------------|
-| Turn order | FIFO queue | Fixed rotation | Manual | None | Orchestrator assigns |
-| Agent speaks when | Floor granted | Their turn | Moderator grants | Anytime | Assigned |
-| Round tracking | No | Yes | No | No | No (task-based) |
-| Director compatible | ✓ | ✓ (speaks first) | ✓ | ✓ | ✗ |
-| ShowRunner compatible | ✓ | ✓ (speaks last) | ✓ | ✓ | ✗ |
-| Orchestrator compatible | ✗ | ✗ | ✗ | ✗ | ✓ (required) |
-| Human agent | ✓ | ✓ | ✓ | ✓ | ✓ (optional) |
-| Manuscript output | ✗ | ✗ | ✗ | ✗ | ✓ |
-| Media auto-accept | ✗ | ✗ | ✗ | ✗ | ✓ |
-| Breakout support | ✗ | ✗ | ✗ | ✗ | ✓ |
+| Next speaker | FIFO requests | Ring successor | Chair's call-on (FIFO w/o human) | Anyone, now | Assigned worker → orchestrator |
+| Requests queued | Yes | No (ring members) | Yes, until called on | No | Only assigned agents |
+| Round tracking | On utterances | On ring wrap | On utterances | On utterances | No (task-based) |
+| Director / ShowRunner | At round boundaries | Opens / closes each round | At round boundaries | At round boundaries | ✗ |
+| Orchestrator | ✗ | ✗ | ✗ | ✗ | Required |
+| Human | Takes turns | Ring member | Chair (moderator) | Speaks anytime | Interjects; can be assigned |
+| Relevance filter | — | — | — | ✓ | — |
+| Manuscript / media auto-accept / breakouts | ✗ | ✗ | ✗ | ✗ | ✓ |
