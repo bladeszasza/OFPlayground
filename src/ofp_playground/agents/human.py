@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from ofp_playground.agents.base import BasePlaygroundAgent
-from ofp_playground.bus.message_bus import MessageBus
+from ofp_playground.bus.message_bus import FLOOR_MANAGER_URI, MessageBus
 
 if TYPE_CHECKING:
     from ofp_playground.renderer.terminal import TerminalRenderer
@@ -66,6 +66,12 @@ class HumanAgent(BasePlaygroundAgent):
             event_type = getattr(event, "eventType", type(event).__name__)
 
             if event_type == "utterance":
+                if sender_uri == FLOOR_MANAGER_URI and self._renderer:
+                    # Private directives addressed to the human (orchestrator
+                    # [ASSIGN You]: …) are not rendered by the floor manager.
+                    text = self._extract_text_from_envelope(envelope) or ""
+                    if f"[DIRECTIVE for {self._name}]".lower() in text.lower():
+                        self._renderer.show_system_event(f"📋 {text.split(chr(10) + chr(10))[0]}")
                 if (
                     sender_uri != self.speaker_uri
                     and self._floor_policy == "sequential"
@@ -77,7 +83,9 @@ class HumanAgent(BasePlaygroundAgent):
             elif event_type == "grantFloor":
                 self._has_floor = True
                 if self._renderer:
-                    self._renderer.show_system_event(f"Floor granted to you, {self._name}")
+                    self._renderer.show_system_event(
+                        f"Floor granted to you, {self._name} — type a message, or /pass to skip"
+                    )
 
             elif event_type == "revokeFloor":
                 self._has_floor = False
@@ -197,6 +205,9 @@ class HumanAgent(BasePlaygroundAgent):
         if cmd in ("quit", "exit", "q"):
             self._stop_event.set()
             return False
+        elif cmd == "pass" and "pass" not in self._command_handlers:
+            if not await self.pass_turn() and self._renderer:
+                self._renderer.show_system_event("You don't hold the floor — nothing to pass")
         elif cmd == "history":
             # Handled by CLI/renderer
             if cmd in self._command_handlers:
@@ -276,10 +287,19 @@ class HumanAgent(BasePlaygroundAgent):
             envelope = self._make_utterance_envelope(text)
             await self.send_envelope(envelope)
 
-            # In sequential and round_robin mode, yield after speaking
-            if self._floor_policy in ("sequential", "round_robin") and self._has_floor:
+            # Release a held turn after speaking (sequential / round-robin turns, a
+            # moderator /grant, an orchestrator assignment). FREE_FOR_ALL never holds.
+            if self._has_floor and self._floor_policy != "free_for_all":
                 self._has_floor = False
                 await self.yield_floor()
+
+    async def pass_turn(self) -> bool:
+        """Give up a held floor without speaking. Returns True if a turn was released."""
+        if not self._has_floor or self._floor_policy == "free_for_all":
+            return False
+        self._has_floor = False
+        await self.yield_floor()
+        return True
 
     async def _receive_loop(self) -> None:
         """Process incoming messages from the bus."""

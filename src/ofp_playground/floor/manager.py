@@ -26,6 +26,7 @@ from openfloor import (
     UtteranceEvent,
 )
 
+from ofp_playground.agents import uris
 from ofp_playground.bus.message_bus import FLOOR_MANAGER_URI, MessageBus
 from ofp_playground.config.output import SessionOutputManager
 from ofp_playground.floor.history import ConversationHistory
@@ -79,6 +80,11 @@ def _looks_like_internal_coding_progress(sender_name: str, text: str) -> bool:
         )
     )
 FLOOR_MANAGER_URI_STR = FLOOR_MANAGER_URI
+# A line that starts a new orchestrator directive (ends a multi-line task).
+_DIRECTIVE_LINE_RE = (
+    r"\[(?:ASSIGN|ASSIGN_PARALLEL|ACCEPT|REJECT|KICK|SPAWN|SKIP|STORE_MEMORY|TASK_COMPLETE|"
+    r"BREAKOUT|BREAKOUT_AGENT|CODING_SESSION|CODING_CONTEXT|CODING_TODO|CODING_AGENT)[\s\]]"
+)
 ORCHESTRATOR_RECOVERY_BASE_DELAY_S = 0.5
 ORCHESTRATOR_RECOVERY_MAX_DELAY_S = 3.0
 
@@ -141,6 +147,12 @@ class FloorManager:
         self._orchestrator_uri: str | None = None
         self._assigned_uri: str | None = None  # currently assigned agent in showrunner_driven mode
         self._parallel_batch: set[str] = set()  # URIs assigned simultaneously via [ASSIGN_PARALLEL]
+        self._parallel_outputs: list[tuple[str, str]] = []  # (name, text) collected from the batch
+        self._last_task_by_uri: dict[str, str] = {}  # last task per worker, reused by [REJECT]
+        self._utterance_count: int = 0  # total agent utterances (history keeps only the last 100)
+        self._rr_idle_yields: int = 0  # consecutive round-robin turns that produced no utterance
+        self._moderators: set[str] = set()  # human moderators (MODERATED policy)
+        self.max_turns: int | None = None  # stop after this many agent utterances
         self._last_orchestrator_directive_text: str = ""  # suppress duplicate replay while assignment is in flight
         self._spawn_callback: Callable[..., Any] | None = None  # set externally after creation
         self._orchestrator_idle_grants: int = 0  # consecutive floor grants with no productive action
@@ -191,10 +203,55 @@ class FloorManager:
         return self._policy.current_holder
 
     @property
+    def policy(self) -> FloorPolicy:
+        return self._policy.policy
+
+    @property
+    def floor_queue(self) -> list[str]:
+        """URIs waiting for the floor: moderator call-ons first, then requests."""
+        return self._policy.directed_queue + [uri for uri, _ in self._policy.queue]
+
+    @property
+    def utterance_count(self) -> int:
+        """Total agent utterances so far. Unlike ``history`` this is never capped."""
+        return self._utterance_count
+
+    @property
+    def round_boundary_uris(self) -> set[str]:
+        """Director / show runner / orchestrator: granted by the floor, never by rotation."""
+        return {u for u in (self._director_uri, self._showrunner_uri, self._orchestrator_uri) if u}
+
+    @property
     def floor_holders(self) -> tuple[str, ...]:
         if self._policy.policy == FloorPolicy.FREE_FOR_ALL:
             return tuple(sorted(self._concurrent_holders))
         return (self.floor_holder,) if self.floor_holder else ()
+
+    def kickoff_target(self, *, has_topic: bool, has_human: bool) -> str | None:
+        """Who gets the first grant when a session starts (same for every UI).
+
+        * SHOWRUNNER_DRIVEN → the orchestrator (its mission is in its prompt).
+        * A director → the director (it opens every round).
+        * MODERATED with a human moderator → nobody: the chair calls on agents.
+        * ROUND_ROBIN → the first ring member (a non-human one when a topic was
+          seeded, so agents answer it; otherwise the human may open).
+        * Autonomous session without a topic → the first agent.
+        * Otherwise nobody: agents request the floor in response to the topic.
+        """
+        if self._orchestrator_uri:
+            return self._orchestrator_uri
+        if self._director_uri:
+            return self._director_uri
+        if self._policy.policy == FloorPolicy.MODERATED and self._moderators:
+            return None
+        ring = [u for u in self._policy.rotation if u not in self._draining_agents]
+        if self._policy.policy == FloorPolicy.ROUND_ROBIN and ring:
+            if has_topic or not has_human:
+                return next((u for u in ring if not uris.is_human_uri(u)), ring[0])
+            return ring[0]
+        if not has_topic and not has_human:
+            return next(iter(self._agents), None)
+        return None
 
     def _sync_sandbox_context(self) -> str:
         """Mirror phase and memory context into the shared sandbox and render guidance."""
@@ -206,12 +263,14 @@ class FloorManager:
         return build_sandbox_context_note(context)
 
     def register_director(self, speaker_uri: str) -> None:
-        """Mark an agent as the narrative director (gets floor at round boundaries)."""
+        """Mark an agent as the narrative director: it opens every round."""
         self._director_uri = speaker_uri
+        self._policy.remove_from_rotation(speaker_uri)
 
     def register_showrunner(self, speaker_uri: str) -> None:
-        """Mark an agent as the show runner (gets floor at round boundaries, after story agents)."""
+        """Mark an agent as the show runner: it closes every round."""
         self._showrunner_uri = speaker_uri
+        self._policy.remove_from_rotation(speaker_uri)
 
     def register_orchestrator(self, speaker_uri: str) -> None:
         """Mark an agent as the SHOWRUNNER_DRIVEN orchestrator.
@@ -220,6 +279,7 @@ class FloorManager:
         Its utterances are parsed for structured directives ([ASSIGN], [REJECT], etc.).
         """
         self._orchestrator_uri = speaker_uri
+        self._policy.remove_from_rotation(speaker_uri)
 
     async def grant_to(self, speaker_uri: str) -> None:
         """Directly grant floor to a specific agent, bypassing the request queue."""
@@ -266,7 +326,13 @@ class FloorManager:
         self._departed_agents.discard(speaker_uri)
         self._draining_agents.discard(speaker_uri)
         self._trace_collector.register_agent(speaker_uri, name)
-        self._policy.add_to_rotation(speaker_uri)
+        # Round-boundary roles are granted explicitly and never take a rotation turn.
+        if speaker_uri not in self.round_boundary_uris:
+            self._policy.add_to_rotation(speaker_uri)
+        # MODERATED: a human participant is the moderator (chair).
+        if self._policy.policy == FloorPolicy.MODERATED and uris.is_human_uri(speaker_uri):
+            self._moderators.add(speaker_uri)
+            self._policy.manual = True
         if self._renderer:
             self._renderer.add_agent(speaker_uri, name)
 
@@ -280,6 +346,9 @@ class FloorManager:
         self._manifests.pop(speaker_uri, None)
         self._agents_spoken_this_round.discard(speaker_uri)
         self._parallel_batch.discard(speaker_uri)
+        if speaker_uri in self._moderators:
+            self._moderators.discard(speaker_uri)
+            self._policy.manual = bool(self._moderators)
         for attr in ("_assigned_uri", "_orchestrator_uri", "_director_uri", "_showrunner_uri"):
             if getattr(self, attr, None) == speaker_uri:
                 setattr(self, attr, None)
@@ -482,6 +551,22 @@ class FloorManager:
             utterance = Utterance.from_text(sender_uri, sender_name, text)
 
         self._history.add(utterance)
+        if sender_uri != self.speaker_uri:
+            self._utterance_count += 1
+            self._rr_idle_yields = 0
+            if self.max_turns and self._utterance_count >= self.max_turns:
+                # Counted here (not via len(history), which is capped at 100) so
+                # --max-turns works for any N and stops exactly on the Nth turn.
+                if self._renderer:
+                    self._renderer.show_utterance(
+                        sender_uri, sender_name, text,
+                        media_key=media_key, media_path=media_path,
+                    )
+                    self._renderer.show_system_event(
+                        f"Reached {self.max_turns} turns — stopping conversation."
+                    )
+                self.stop()
+                return
 
         # ----------------------------------------------------------------
         # SHOWRUNNER_DRIVEN: orchestrator utterance → parse its directives
@@ -506,59 +591,16 @@ class FloorManager:
             self._agents_spoken_this_round.add(sender_uri)
 
             if self._orchestrator_uri:
-                # SHOWRUNNER_DRIVEN: every worker utterance returns floor to orchestrator
-                is_media = media_key is not None  # detected from OFP features, covers "3d" too
-                if not is_media:
-                    # Parse [REMEMBER] directives from worker output (text-directive memory fallback)
-                    cleaned_text = self._parse_worker_memory(text, sender_name)
-                    # Record for manuscript accumulation on [ACCEPT]
-                    self._last_worker_text = cleaned_text
-                    self._last_worker_name = sender_name
-                    self._assigned_uri = None
-                    self._parallel_batch.discard(sender_uri)  # no-op in single-assign mode
-                    await self._maybe_return_floor_to_orchestrator()
-                else:
-                    # Auto-accept media output — it cannot be text-verified via [ACCEPT]/[REJECT]
-                    entry = (
-                        f"[{media_key} by {sender_name}]: {media_path}"
-                        if media_path
-                        else f"[{media_key} by {sender_name}]: {text}"
-                    )
-                    self._manuscript.append(entry)
-                    self._parallel_batch.discard(sender_uri)  # no-op in single-assign mode
-                    self._assigned_uri = None
-                    if self._renderer:
-                        self._renderer.show_system_event(
-                            f"[Auto-accepted] {sender_name}'s {media_key} output"
-                        )
-                    await self._maybe_return_floor_to_orchestrator()
+                await self._handle_showrunner_worker_utterance(
+                    sender_uri, sender_name, text, media_key, media_path,
+                )
             else:
-                # Existing round-boundary logic (showrunner / director / summary)
-                text_agents = {
-                    uri for uri in self._agents
-                    if "image" not in uri and "video" not in uri and "audio" not in uri
-                    and uri != self._showrunner_uri
-                }
-                if text_agents and text_agents.issubset(self._agents_spoken_this_round):
-                    self._round_count += 1
-                    self._agents_spoken_this_round.clear()
-                    if self._showrunner_uri:
-                        await self.grant_to(self._showrunner_uri)
-                        if self._renderer:
-                            self._renderer.show_system_event(
-                                f"Round {self._round_count} complete — ShowRunner has the floor"
-                            )
-                    elif self._director_uri:
-                        await self.grant_to(self._director_uri)
-                        if self._renderer:
-                            self._renderer.show_system_event(
-                                f"Round {self._round_count} complete — Director has the floor"
-                            )
-                    elif self._has_llm_agent(text_agents):
-                        # Only inject a round summary when at least one LLM agent
-                        # is present — remote agents don't maintain narrative context
-                        # and would just echo/search for the summary text.
-                        await self._inject_round_summary()
+                if sender_uri in self._moderators:
+                    await self._call_on_addressed_agents(sender_uri, text)
+                # ROUND_ROBIN rounds are closed when the last ring member yields
+                # (_handle_round_robin_yield); other policies close them here.
+                if self._policy.policy != FloorPolicy.ROUND_ROBIN:
+                    await self._maybe_close_round()
 
         # Display
         if self._renderer:
@@ -566,6 +608,253 @@ class FloorManager:
                 sender_uri, sender_name, text,
                 media_key=media_key, media_path=media_path,
             )
+
+    # ── SHOWRUNNER_DRIVEN worker bookkeeping ───────────────────────────────
+
+    def _is_expected_worker(self, speaker_uri: str) -> bool:
+        return speaker_uri == self._assigned_uri or speaker_uri in self._parallel_batch
+
+    def _mark_worker_done(self, speaker_uri: str) -> None:
+        if speaker_uri == self._assigned_uri:
+            self._assigned_uri = None
+        if speaker_uri in self._parallel_batch:
+            self._parallel_batch.discard(speaker_uri)
+            if not self._parallel_batch and self._parallel_outputs:
+                # Combine every parallel answer so [ACCEPT] keeps all of them,
+                # not just whichever agent happened to finish last.
+                outputs, self._parallel_outputs = self._parallel_outputs, []
+                self._last_worker_name = ", ".join(name for name, _ in outputs)
+                self._last_worker_text = (
+                    outputs[0][1] if len(outputs) == 1
+                    else "\n\n".join(f"[{name}]:\n{text}" for name, text in outputs)
+                )
+
+    async def _handle_showrunner_worker_utterance(
+        self,
+        sender_uri: str,
+        sender_name: str,
+        text: str,
+        media_key: str | None,
+        media_path: str | None,
+    ) -> None:
+        """Record a worker delivery and hand the floor back to the orchestrator.
+
+        Only the assigned worker (or a member of the active parallel batch)
+        counts as a delivery.  Anything else — a human interjecting, a remote
+        agent answering a broadcast, a late reply — stays conversation context
+        and must not clear an assignment that is still in flight.
+        """
+        if not self._is_expected_worker(sender_uri):
+            if (
+                uris.is_human_uri(sender_uri)
+                and self._assigned_uri is None
+                and not self._parallel_batch
+                and self._policy.current_holder is None
+            ):
+                # Idle floor (e.g. session started without a topic): human
+                # input is what wakes the orchestrator up.
+                await self._maybe_return_floor_to_orchestrator()
+            elif not uris.is_human_uri(sender_uri):
+                logger.info(
+                    "Unsolicited output from %s kept as context (assigned: %s)",
+                    sender_name, self._agents.get(self._assigned_uri or "", "nobody"),
+                )
+            return
+
+        if media_key is None:
+            cleaned_text = self._parse_worker_memory(text, sender_name)
+            if sender_uri in self._parallel_batch:
+                self._parallel_outputs.append((sender_name, cleaned_text))
+            else:
+                self._last_worker_text = cleaned_text
+                self._last_worker_name = sender_name
+        else:
+            # Auto-accept media output — it cannot be text-verified via [ACCEPT]/[REJECT]
+            entry = (
+                f"[{media_key} by {sender_name}]: {media_path}"
+                if media_path
+                else f"[{media_key} by {sender_name}]: {text}"
+            )
+            self._manuscript.append(entry)
+            if self._renderer:
+                self._renderer.show_system_event(
+                    f"[Auto-accepted] {sender_name}'s {media_key} output"
+                )
+        self._mark_worker_done(sender_uri)
+        await self._maybe_return_floor_to_orchestrator()
+
+    async def _handle_worker_without_output(
+        self,
+        speaker_uri: str,
+        why: str = "yielded the floor without delivering any output",
+    ) -> None:
+        """An assigned worker finished its turn silently (error, timeout, empty reply).
+
+        Without this the orchestrator never regained the floor and the whole
+        SHOWRUNNER_DRIVEN session stalled.
+        """
+        name = self._agents.get(speaker_uri, speaker_uri.split(":")[-1])
+        self._mark_worker_done(speaker_uri)
+        if self._renderer:
+            self._renderer.show_system_event(f"[Orchestrator] {name} {why}")
+        if self._orchestrator_uri:
+            await self._send_directed_utterance(
+                f"[SYSTEM] {name} {why}. Decide the next step: "
+                f"[REJECT {name}]: clearer instructions, re-[ASSIGN] the task to "
+                f"another agent, or [SKIP {name}]: reason.",
+                target_uri=self._orchestrator_uri,
+            )
+        await self._maybe_return_floor_to_orchestrator()
+
+    async def _report_worker_removed(self, name: str) -> None:
+        """An in-flight worker was removed by a UI/operator: tell the orchestrator."""
+        if self._renderer:
+            self._renderer.show_system_event(f"[Orchestrator] {name} was removed mid-task")
+        if self._orchestrator_uri:
+            await self._send_directed_utterance(
+                f"[SYSTEM] {name} was removed from the floor before delivering its task. "
+                f"Re-[ASSIGN] the work to another agent or [SKIP {name}]: reason.",
+                target_uri=self._orchestrator_uri,
+            )
+        await self._maybe_return_floor_to_orchestrator()
+
+    def _is_media_worker(self, speaker_uri: str) -> bool:
+        """True for agents that turn a prompt into media rather than text."""
+        if uris.uri_kind(speaker_uri) in uris.MEDIA_KINDS:
+            return True
+        outputs = uris.manifest_output_kinds(self._manifests.get(speaker_uri))
+        return bool(outputs) and "text" not in outputs
+
+    def _build_directive(
+        self,
+        target_name: str,
+        target_uri: str,
+        task: str,
+        *,
+        breakout_output: str | None = None,
+    ) -> str:
+        """Build the private ``[DIRECTIVE for X]`` sent ahead of a worker's grant.
+
+        Text workers get the compact artifact index, sandbox note, session memory
+        and (once) the latest breakout transcript.  Remote and media workers get
+        the bare task: remote endpoints don't keep narrative context, and media
+        generators would paste those blocks straight into their prompt.
+        """
+        directive = f"[DIRECTIVE for {target_name}]: {task}"
+        if uris.is_remote_uri(target_uri) or self._is_media_worker(target_uri):
+            return directive
+        artifact_index = self._artifact_store.get_index()
+        if artifact_index:
+            directive += f"\n\n{artifact_index}"
+        sandbox_note = self._sync_sandbox_context()
+        if sandbox_note:
+            directive += f"\n\n{sandbox_note}"
+        if not self._memory_store.is_empty():
+            memory_summary = self._memory_store.get_summary(max_chars=600)
+            directive += f"\n\n--- SESSION MEMORY ---\n{memory_summary}\n---"
+        if breakout_output:
+            directive += (
+                f"\n\n--- BREAKOUT SESSION OUTPUT ---\n"
+                f"{breakout_output}\n"
+                f"--- END OF BREAKOUT OUTPUT ---"
+            )
+        return directive
+
+    def _take_pending_breakout_output(self) -> str | None:
+        """Read (and consume) the latest breakout transcript for the next text worker."""
+        if not self._pending_breakout_file:
+            return None
+        try:
+            return self._pending_breakout_file.read_text(encoding="utf-8")
+        except OSError as e:
+            logger.warning("Could not read breakout artifact: %s", e)
+            return None
+        finally:
+            self._pending_breakout_file = None  # consume — single use
+
+    async def _dispatch_assignment(self, target_name: str, target_uri: str, task: str) -> None:
+        """Directive first, then the grant — the worker reads its task before it speaks."""
+        breakout_output = None
+        if not uris.is_remote_uri(target_uri) and not self._is_media_worker(target_uri):
+            breakout_output = self._take_pending_breakout_output()
+        directive = self._build_directive(
+            target_name, target_uri, task, breakout_output=breakout_output,
+        )
+        self._last_task_by_uri[target_uri] = task
+        await self._send_directed_utterance(directive, target_uri=target_uri)
+        await self.grant_to(target_uri)
+
+    # ── Round boundaries & moderation (non-orchestrated policies) ───────────
+
+    def _round_participants(self) -> set[str]:
+        """Agents whose turn counts toward completing a round."""
+        excluded_kinds = uris.MEDIA_KINDS | {uris.PERCEPTION, uris.VISION, uris.OBSERVER, uris.FLOOR}
+        return {
+            uri for uri in self._agents
+            if uri not in self.round_boundary_uris
+            and uri not in self._draining_agents
+            and uris.uri_kind(uri) not in excluded_kinds
+        }
+
+    async def _maybe_close_round(self) -> None:
+        participants = self._round_participants()
+        if not participants or not participants.issubset(self._agents_spoken_this_round):
+            return
+        self._round_count += 1
+        self._agents_spoken_this_round.clear()
+        if self._showrunner_uri:
+            await self.grant_to(self._showrunner_uri)
+            if self._renderer:
+                self._renderer.show_system_event(
+                    f"Round {self._round_count} complete — ShowRunner has the floor"
+                )
+        elif self._director_uri:
+            await self.grant_to(self._director_uri)
+            if self._renderer:
+                self._renderer.show_system_event(
+                    f"Round {self._round_count} complete — Director has the floor"
+                )
+        elif self._has_llm_agent(participants):
+            # Only inject a round summary when at least one LLM agent is present —
+            # remote agents don't keep narrative context and would echo it.
+            await self._inject_round_summary()
+
+    def _addressed_agents(self, speaker_uri: str, text: str) -> list[str]:
+        """Agents a moderator addressed by name, in the order they were mentioned."""
+        import re as _re
+
+        hits: list[tuple[int, str]] = []
+        for uri, name in self._agents.items():
+            if uri == speaker_uri or uri in self._moderators or uri in self._draining_agents:
+                continue
+            variants = {name, name.replace("_", " "), name.replace(" ", "")}
+            positions = [
+                m.start()
+                for variant in variants if variant
+                for m in [_re.search(rf"(?<![\w-]){_re.escape(variant)}(?![\w-])", text, _re.IGNORECASE)]
+                if m
+            ]
+            if positions:
+                hits.append((min(positions), uri))
+        return [uri for _, uri in sorted(hits)]
+
+    async def _call_on_addressed_agents(self, speaker_uri: str, text: str) -> None:
+        """MODERATED: the moderator gives the floor by addressing agents by name."""
+        if self._policy.policy != FloorPolicy.MODERATED:
+            return
+        for uri in self._addressed_agents(speaker_uri, text):
+            if self._policy.call_on(uri):
+                await self._grant_floor(uri)
+            elif self._renderer and self._renderer.show_floor_events:
+                self._renderer.show_system_event(
+                    f"{self._agents.get(uri, uri)} will speak next (called on by the moderator)"
+                )
+
+    async def moderator_grant(self, speaker_uri: str) -> None:
+        """Moderator override (/grant): take the floor from the holder and give it away."""
+        if speaker_uri not in self._agents:
+            raise ValueError("Unknown participant")
+        await self.grant_to(speaker_uri)
 
     def _resolve_agent_uri_by_name(self, name: str) -> str | None:
         """Look up a speakerUri by conversational name.
@@ -871,7 +1160,7 @@ class FloorManager:
                 task_parts = [m.group(2)]
                 while i < len(lines):
                     peek = lines[i].strip()
-                    if re.match(r"\[(?:ASSIGN|ASSIGN_PARALLEL|ACCEPT|REJECT|KICK|SPAWN|SKIP|STORE_MEMORY|TASK_COMPLETE|BREAKOUT|BREAKOUT_AGENT|CODING_SESSION|CODING_CONTEXT|CODING_TODO|CODING_AGENT)[\s\]]", peek, re.IGNORECASE):
+                    if re.match(_DIRECTIVE_LINE_RE, peek, re.IGNORECASE):
                         break
                     task_parts.append(lines[i])
                     i += 1
@@ -893,52 +1182,15 @@ class FloorManager:
                     assigned_in_batch = True
                     # Track who is assigned so _handle_request_floor can filter others
                     self._assigned_uri = target_uri
+                    self._parallel_batch = set()
+                    self._parallel_outputs = []
                     self._last_orchestrator_directive_text = line
-                    # Flush any stale queue entries from agents that saw the orchestrator utterance
-                    self._policy._request_queue.clear()
-                    # Build directive, injecting phase artifact index for local LLM agents.
-                    # Remote agents receive the raw task — they don't maintain narrative context
-                    # and echoing the full manuscript confuses their endpoint logic.
-                    # Expand any read_artifact('slug') references inline before
-                    # sending to workers — HF text agents have no tool support and
-                    # cannot call read_artifact() themselves.
+                    # Flush stale requests from agents that saw the orchestrator utterance
+                    self._policy.clear_requests()
+                    # HF text agents have no tool support: inline read_artifact('slug') refs.
                     task = self._expand_artifact_refs_in_task(task)
-                    directive = f"[DIRECTIVE for {target_name}]: {task}"
-                    is_remote = "remote-" in target_uri
-                    # Inject compact artifact index instead of the full manuscript.
-                    # Agents can use read_artifact(slug) to pull specific phase
-                    # outputs on demand, keeping directive size bounded.
-                    artifact_index = self._artifact_store.get_index()
-                    if artifact_index and not is_remote:
-                        directive += f"\n\n{artifact_index}"
-                    if not is_remote:
-                        sandbox_note = self._sync_sandbox_context()
-                        if sandbox_note:
-                            directive += f"\n\n{sandbox_note}"
-                    if not self._memory_store.is_empty() and not is_remote:
-                        memory_summary = self._memory_store.get_summary(max_chars=600)
-                        directive += f"\n\n--- SESSION MEMORY ---\n{memory_summary}\n---"
-                    # Auto-inject the most recent breakout artifact into the first ASSIGN
-                    # after a breakout completes — topic-agnostic: any agent type works.
-                    if self._pending_breakout_file and not is_remote:
-                        try:
-                            artifact_content = self._pending_breakout_file.read_text(encoding="utf-8")
-                            directive += (
-                                f"\n\n--- BREAKOUT SESSION OUTPUT ---\n"
-                                f"{artifact_content}\n"
-                                f"--- END OF BREAKOUT OUTPUT ---"
-                            )
-                        except OSError as e:
-                            logger.warning("Could not read breakout artifact: %s", e)
-                        finally:
-                            self._pending_breakout_file = None  # consume — single use
-                    # Send directive FIRST (agent sets its task instruction from this),
-                    # then grant floor.  The directive comes from the floor manager as a
-                    # private OFP whisper; BaseLLMAgent skips request_floor() for these
-                    # so there is no spurious floor request racing the explicit grant.
                     self._orchestrator_idle_grants = 0  # productive action — reset counter
-                    await self._send_directed_utterance(directive, target_uri=target_uri)
-                    await self.grant_to(target_uri)
+                    await self._dispatch_assignment(target_name, target_uri, task)
                     if self._renderer:
                         self._renderer.show_system_event(
                             f"[Orchestrator → {target_name}]: {task[:60]}"
@@ -955,56 +1207,82 @@ class FloorManager:
                 continue
 
             # [ASSIGN_PARALLEL Agent1, Agent2, ...]: task
-            # Dispatches the same task to multiple agents simultaneously.
-            # The orchestrator regains the floor only after ALL agents respond.
-            m = re.match(r"\[ASSIGN_PARALLEL\s+(.+?)\]\s*:\s*(.+)", line, re.IGNORECASE)
+            # Dispatches the same task to several agents at once (fan-out). Each gets a
+            # regular [DIRECTIVE for X] so every agent type understands it; the
+            # orchestrator regains the floor once ALL of them delivered or failed, and
+            # [ACCEPT] then keeps every answer.
+            m = re.match(r"\[ASSIGN_PARALLEL\s+(.+?)\]\s*:\s*(.*)", line, re.IGNORECASE)
             if m:
-                names_raw = m.group(1)
-                task = m.group(2).strip()
-                names = [n.strip() for n in names_raw.split(",") if n.strip()]
-                uris = [
-                    u for n in names
-                    if (u := self._resolve_agent_uri_by_name(n))
-                ]
-                if not uris:
-                    logger.warning("Orchestrator [ASSIGN_PARALLEL]: no valid agents in %s", names)
+                names = [n.strip() for n in m.group(1).split(",") if n.strip()]
+                task_parts = [m.group(2)]
+                while i < len(lines):
+                    peek = lines[i].strip()
+                    if re.match(_DIRECTIVE_LINE_RE, peek, re.IGNORECASE):
+                        break
+                    task_parts.append(lines[i])
+                    i += 1
+                task = self._expand_artifact_refs_in_task("\n".join(task_parts).strip())
+                targets: list[tuple[str, str]] = []
+                for n in names:
+                    uri = self._resolve_agent_uri_by_name(n)
+                    if uri and uri not in self._draining_agents and all(uri != u for _, u in targets):
+                        targets.append((self._agents.get(uri, n), uri))
+                if not targets or not task:
+                    logger.warning("Orchestrator [ASSIGN_PARALLEL]: no valid agents/task in %s", names)
+                    available = [n for u, n in self._agents.items() if u != self._orchestrator_uri]
                     await self._send_directed_utterance(
-                        f"[SYSTEM] [ASSIGN_PARALLEL] FAILED — none of {names} found on the floor.",
+                        f"[SYSTEM] [ASSIGN_PARALLEL] FAILED — none of {names} found on the floor "
+                        f"(or the task was empty). Available agents: {available}.",
                         target_uri=self._orchestrator_uri,
                     )
                     continue
+                if assigned_in_batch:
+                    logger.debug("Orchestrator [ASSIGN_PARALLEL] ignored: already assigned this turn")
+                    continue
+                assigned_in_batch = True
                 # Parallel mode is mutually exclusive with single-assign mode
                 self._assigned_uri = None
-                self._parallel_batch = set(uris)
-                self._policy._request_queue.clear()
+                self._parallel_batch = {uri for _, uri in targets}
+                self._parallel_outputs = []
+                self._last_orchestrator_directive_text = line
+                self._policy.clear_requests()
                 self._orchestrator_idle_grants = 0
                 if self._renderer:
                     self._renderer.show_system_event(
-                        f"[Orchestrator → PARALLEL {names}]: {task[:60]}"
+                        f"[Orchestrator → PARALLEL {[n for n, _ in targets]}]: {task[:60]}"
                     )
-                # Dispatch directive to all agents simultaneously
-                async def _dispatch_parallel(uri: str, name: str, task: str = task) -> None:
-                    directive = f"[PARALLEL DIRECTIVE for {name}]: {task}"
-                    sandbox_note = self._sync_sandbox_context()
-                    if sandbox_note:
-                        directive += f"\n\n{sandbox_note}"
+                breakout_output = self._take_pending_breakout_output()
+                for target_name, uri in targets:
+                    peers = [n for n, u in targets if u != uri]
+                    member_task = task
+                    if peers and not self._is_media_worker(uri):
+                        member_task += (
+                            f"\n\n(Parallel assignment — {', '.join(peers)} work on the same "
+                            f"task independently; give your own answer.)"
+                        )
+                    directive = self._build_directive(
+                        target_name, uri, member_task,
+                        breakout_output=None if uris.is_remote_uri(uri) or self._is_media_worker(uri)
+                        else breakout_output,
+                    )
+                    self._last_task_by_uri[uri] = task
                     await self._send_directed_utterance(directive, target_uri=uri)
-                    await self.grant_to(uri)
-
-                agent_name_map = {u: self._agents.get(u, u) for u in uris}
-                await asyncio.gather(*[
-                    _dispatch_parallel(uri, agent_name_map[uri])
-                    for uri in uris
-                ])
+                # Grant every member without revoking the others: all of them work at
+                # once. The controller tracks the first; later yields are no-ops.
+                self._policy.grant_to(targets[0][1])
+                for _, uri in targets:
+                    await self._grant_floor(uri)
                 continue
 
             # [ACCEPT] / [ACCEPT prose] / [ACCEPT plan] / [ACCEPT image]
             # - [ACCEPT] and [ACCEPT prose] → append to manuscript (backward compat)
             # - [ACCEPT plan] / [ACCEPT image] → save artifact only; keep manuscript clean
-            m_accept = re.match(r"\[ACCEPT(?:\s+(prose|plan|image))?\]", line, re.IGNORECASE)
+            m_accept = re.match(
+                r"\[ACCEPT(?:\s+(prose|plan|image|music|audio|video))?\]", line, re.IGNORECASE
+            )
             if m_accept:
                 accept_type = (m_accept.group(1) or "").lower()
-                add_to_manuscript = accept_type not in ("plan", "image")
+                add_to_manuscript = accept_type not in ("plan", "image", "music", "audio", "video")
                 self._orchestrator_idle_grants = 0
                 if self._last_worker_text:
                     self._last_accepted_text = self._last_worker_text
@@ -1048,21 +1326,36 @@ class FloorManager:
                 target_uri = self._resolve_agent_uri_by_name(target_name)
                 if target_uri:
                     self._assigned_uri = target_uri
+                    self._parallel_batch = set()
+                    self._parallel_outputs = []
+                    self._last_worker_text = ""  # the rejected output must not be [ACCEPT]ed later
                     self._orchestrator_idle_grants = 0
-                    self._policy._request_queue.clear()
-                    directive = f"[DIRECTIVE for {target_name}]: Revision requested — {reason}"
-                    if "remote-" not in target_uri:
-                        sandbox_note = self._sync_sandbox_context()
-                        if sandbox_note:
-                            directive += f"\n\n{sandbox_note}"
-                    await self.grant_to(target_uri)
-                    await self._send_directed_utterance(directive, target_uri=target_uri)
+                    self._policy.clear_requests()
+                    previous_task = self._last_task_by_uri.get(target_uri, "")
+                    if self._is_media_worker(target_uri) and previous_task:
+                        # Media agents build their prompt from the first line: keep the
+                        # original prompt first so a revision is not just the critique.
+                        task = f"{previous_task}\nRevision notes: {reason}"
+                    else:
+                        task = f"Revision requested — {reason}"
+                        if previous_task:
+                            task += f"\n\nOriginal task: {previous_task}"
+                    # Directive first, grant second — previously the grant went out first
+                    # and the agent regenerated before it ever saw the revision reason.
+                    await self._dispatch_assignment(target_name, target_uri, task)
+                    self._last_task_by_uri[target_uri] = previous_task or task
                     if self._renderer:
                         self._renderer.show_system_event(
                             f"[Orchestrator] Rejected {target_name}: {reason[:60]}"
                         )
                 else:
                     logger.warning("Orchestrator [REJECT]: agent '%s' not found", target_name)
+                    available = [n for u, n in self._agents.items() if u != self._orchestrator_uri]
+                    await self._send_directed_utterance(
+                        f"[SYSTEM] [REJECT {target_name}] FAILED — no such agent on the floor. "
+                        f"Available agents: {available}.",
+                        target_uri=self._orchestrator_uri,
+                    )
                 continue
 
             # [KICK AgentName]
@@ -1142,6 +1435,21 @@ class FloorManager:
                 self._output_manuscript()
                 self.stop()
                 return
+
+        wants_session = bool(
+            (breakout_header and breakout_agent_specs)
+            or (coding_session_header and coding_agent_specs)
+        )
+        if wants_session and assigned_in_batch:
+            # A sub-floor re-grants the orchestrator when it finishes; running one
+            # while a worker is also assigned would give two agents the floor.
+            await self._send_directed_utterance(
+                "[SYSTEM] Breakout/coding session NOT started: it cannot run in the same "
+                "turn as an [ASSIGN]. Wait for the worker's result, then request the "
+                "session on its own turn.",
+                target_uri=self._orchestrator_uri,
+            )
+            return
 
         # After processing all lines, execute breakout if one was requested
         if breakout_header and breakout_agent_specs:
@@ -1562,6 +1870,23 @@ class FloorManager:
             self._skip_next_orchestrator_yield = False
             return
 
+        # SHOWRUNNER_DRIVEN: a worker that yields while still assigned delivered
+        # nothing (error, timeout, empty reply, drained). Hand the floor back.
+        if (
+            self._orchestrator_uri
+            and sender_uri != self._orchestrator_uri
+            and self._is_expected_worker(sender_uri)
+        ):
+            if self._policy.current_holder == sender_uri:
+                self._policy.revoke_floor()
+            self._report_floor(sender_uri, "yielded")
+            await self._handle_worker_without_output(sender_uri)
+            return
+
+        if self._policy.policy == FloorPolicy.ROUND_ROBIN and not self._orchestrator_uri:
+            await self._handle_round_robin_yield(sender_uri)
+            return
+
         if self._policy.policy == FloorPolicy.FREE_FOR_ALL and sender_uri in self._concurrent_holders:
             self._concurrent_holders.discard(sender_uri)
             if self._policy.current_holder == sender_uri:
@@ -1611,7 +1936,66 @@ class FloorManager:
             )
             if backoff > 0:
                 await asyncio.sleep(backoff)
-            await self._grant_floor(self._orchestrator_uri)
+            # grant_to (not _grant_floor) so the controller records the holder;
+            # otherwise the orchestrator's next yield is ignored as stale and the
+            # session stalls after the second idle turn.
+            if self._orchestrator_uri is not None:
+                await self.grant_to(self._orchestrator_uri)
+
+    async def _handle_round_robin_yield(self, sender_uri: str) -> None:
+        """Strict ring order with explicit round boundaries.
+
+        Round: [director] → every ring member in join order → [show runner].
+        The director opens and the show runner closes each round; without them
+        the floor manager injects a short recap when the ring wraps.
+        """
+        if self._policy.current_holder != sender_uri:
+            return  # stale / out-of-turn yield
+        self._report_floor(sender_uri, "yielded")
+        ring = self._policy.rotation
+        self._rr_idle_yields += 1
+        idle_limit = max(4, 2 * (len(ring) + len(self.round_boundary_uris)))
+        if self._rr_idle_yields > idle_limit:
+            # Nobody in a full cycle produced anything (e.g. only perception agents
+            # with nothing to analyse). Park the floor instead of spinning forever;
+            # the next request (new human input, a spawn) restarts the ring.
+            self._policy.revoke_floor()
+            if self._renderer:
+                self._renderer.show_system_event(
+                    "Round-robin paused: a full cycle produced no output — waiting for input"
+                )
+            return
+
+        target: str | None = None
+        if sender_uri == self._director_uri:
+            target = ring[0] if ring else None
+        elif sender_uri == self._showrunner_uri:
+            target = self._director_uri or (ring[0] if ring else None)
+        elif sender_uri in ring and self._policy.is_last_in_rotation(sender_uri):
+            self._round_count += 1
+            self._agents_spoken_this_round.clear()
+            if self._showrunner_uri:
+                target = self._showrunner_uri
+                label = "ShowRunner"
+            elif self._director_uri:
+                target = self._director_uri
+                label = "Director"
+            else:
+                label = ""
+                if self._has_llm_agent(set(ring)):
+                    await self._inject_round_summary()
+            if target and self._renderer:
+                self._renderer.show_system_event(
+                    f"Round {self._round_count} complete — {label} has the floor"
+                )
+
+        if target is not None:
+            self._policy.revoke_floor()
+            await self.grant_to(target)
+            return
+        next_holder = self._policy.yield_floor(sender_uri)
+        if next_holder:
+            await self._grant_floor(next_holder)
 
     async def process_envelope(self, envelope: Envelope) -> None:
         """Process an incoming envelope from the bus."""

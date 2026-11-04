@@ -17,6 +17,15 @@ from ofp_playground.bus.message_bus import MessageBus
 
 logger = logging.getLogger(__name__)
 
+
+def _is_story_participant(uri: str) -> bool:
+    """Text participants a director / show runner hands story beats to."""
+    from ofp_playground.agents import uris
+
+    return uris.uri_kind(uri) not in (
+        uris.MEDIA_KINDS | {uris.FLOOR, uris.OBSERVER, uris.PERCEPTION, uris.VISION}
+    )
+
 ORCHESTRATOR_MAX_OUTPUT_TOKENS = 4096
 
 
@@ -127,7 +136,7 @@ class ShowRunnerAgent(HuggingFaceAgent):
         for uri, name in self._name_registry.items():
             if uri == self.speaker_uri:
                 continue
-            if any(k in uri for k in ("image", "video", "audio", "floor-manager")):
+            if not _is_story_participant(uri):
                 continue
             names.append(name)
         return names
@@ -153,8 +162,10 @@ class ShowRunnerAgent(HuggingFaceAgent):
         # Skip ShowRunner-format messages looping back or director-style messages
         if "[DIRECTIVE for" in text or text.strip().startswith("[SCENE]"):
             return
-        # Skip media agent utterances
-        if any(k in sender_uri for k in ("image", "video", "audio")):
+        # Skip generated-media utterances (detected from the OFP feature, not the URI)
+        from ofp_playground.agents.uris import media_key_from_envelope
+
+        if media_key_from_envelope(envelope):
             return
         sender_name = self._name_registry.get(sender_uri) or _uri_to_name(sender_uri)
         self._append_to_context(sender_name, text, is_self=False)
@@ -317,14 +328,6 @@ class _OrchestratorBase(BaseLLMAgent):
 
     _mission: str
     _stop_callback: Callable[[], None] | None
-    _URI_TYPE_LABELS: ClassVar[dict[str, str]] = {
-        "image-": "image generation",
-        "video-": "video generation",
-        "audio-": "audio generation",
-        "multimodal-": "vision/multimodal",
-        "llm-": "text",
-    }
-
     def set_manifest_registry(self, manifests: dict) -> None:
         self._manifest_registry = manifests
 
@@ -360,12 +363,44 @@ class _OrchestratorBase(BaseLLMAgent):
             return f"[ASSIGN {agent_name}]: {initial_task}" if initial_task else ""
         return tool_use_to_directives(tool_name, args)
 
+    def _tool_call_to_directive(self, tool_name: str, args: dict) -> str:
+        """Map any orchestrator tool call to directive text (side-effect tools → "").
+
+        Used for follow-up model turns (after a recall/read_artifact round-trip);
+        previously those only understood spawn tools, so a breakout or coding
+        session requested in the second turn was silently dropped.
+        """
+        from ofp_playground.floor.breakout_tools import tool_use_to_breakout_directive
+        from ofp_playground.floor.coding_session_tools import tool_use_to_coding_session_directive
+
+        if tool_name in ("store_memory", "recall_memory"):
+            memory_store = getattr(self, "_memory_store", None)
+            if memory_store:
+                from ofp_playground.memory.tools import execute_memory_tool
+                execute_memory_tool(tool_name, args, memory_store, self._name)
+            return ""
+        if tool_name in ("read_artifact", "list_artifacts"):
+            return ""  # read-only; results were only useful inside the tool round-trip
+        if tool_name == "create_breakout_session":
+            return tool_use_to_breakout_directive(args) or ""
+        if tool_name == "create_coding_session":
+            return tool_use_to_coding_session_directive(args) or ""
+        return self._spawn_or_assign(tool_name, args)
+
+    _KIND_LABELS: ClassVar[dict[str, str]] = {
+        "image": "image generation",
+        "video": "video generation",
+        "audio": "audio generation",
+        "vision": "vision/multimodal",
+        "perception": "perception/analysis",
+        "remote": "remote OFP agent",
+        "human": "human",
+    }
+
     def _agent_type_label(self, uri: str) -> str:
-        tail = uri.split(":")[-1]
-        for prefix, label in self._URI_TYPE_LABELS.items():
-            if tail.startswith(prefix):
-                return label
-        return "text"
+        from ofp_playground.agents.uris import uri_kind
+
+        return self._KIND_LABELS.get(uri_kind(uri), "text")
 
     def _build_agent_list(self) -> str:
         lines = []
@@ -416,13 +451,11 @@ class _OrchestratorBase(BaseLLMAgent):
         text = self._extract_text_from_envelope(envelope)
         if not text:
             return
-        _MEDIA_URI_KEYS = ("image-", "video-", "audio-")
-        uri_tail = sender_uri.split(":")[-1]
-        media_type: str | None = None
-        for prefix in _MEDIA_URI_KEYS:
-            if uri_tail.startswith(prefix):
-                media_type = prefix.rstrip("-")
-                break
+        # The media type travels on the wire as an OFP feature — URI prefixes vary
+        # by provider (gimage-, gmusic-, sora-…) and used to be missed here.
+        from ofp_playground.agents.uris import media_key_from_envelope
+
+        media_type = media_key_from_envelope(envelope)
         if media_type is not None:
             # Inform orchestrator the output was auto-accepted so it doesn't re-issue [ASSIGN]
             sender_name = self._name_registry.get(sender_uri) or _uri_to_name(sender_uri)
@@ -634,7 +667,7 @@ class OrchestratorAgent(_OrchestratorBase, HuggingFaceAgent):
                         args = _parse_json_tool_arguments(tc.function.name, tc.function.arguments)
                         if args is None:
                             continue
-                        directive = self._spawn_or_assign(tc.function.name, args)
+                        directive = self._tool_call_to_directive(tc.function.name, args)
                         if directive:
                             spawn_directives.append(directive)
                 if choice2.content:
@@ -777,18 +810,9 @@ class AnthropicOrchestratorAgent(_OrchestratorBase, AnthropicAgent):
                 if block.type == "text" and block.text.strip():
                     final_text = block.text.strip()
                 elif block.type == "tool_use":
-                    if block.name in ("store_memory", "recall_memory") and memory_store:
-                        execute_memory_tool(block.name, block.input, memory_store, self._name)
-                    elif block.name in ("read_artifact", "list_artifacts") and artifact_store:
-                        execute_artifact_tool(block.name, block.input, artifact_store)
-                    elif block.name == "create_breakout_session":
-                        directive = tool_use_to_breakout_directive(block.input)
-                        if directive:
-                            spawn_directives.append(directive)
-                    else:
-                        directive = self._spawn_or_assign(block.name, block.input)
-                        if directive:
-                            spawn_directives.append(directive)
+                    directive = self._tool_call_to_directive(block.name, block.input)
+                    if directive:
+                        spawn_directives.append(directive)
 
         text_parts = spawn_directives + ([final_text] if final_text else [])
         return "\n".join(text_parts) or None
@@ -922,7 +946,7 @@ class OpenAIOrchestratorAgent(_OrchestratorBase, OpenAIAgent):
                     args2 = _parse_json_tool_arguments(item2.name, item2.arguments)
                     if args2 is None:
                         continue
-                    directive2 = self._spawn_or_assign(item2.name, args2)
+                    directive2 = self._tool_call_to_directive(item2.name, args2)
                     if directive2:
                         spawn_directives.append(directive2)
                 elif item2.type == "message":
@@ -1076,7 +1100,7 @@ class GoogleOrchestratorAgent(_OrchestratorBase, GoogleAgent):
             for candidate in (response2.candidates or []):
                 for part in (candidate.content.parts or []):
                     if hasattr(part, "function_call") and part.function_call:
-                        directive = self._spawn_or_assign(part.function_call.name, dict(part.function_call.args))
+                        directive = self._tool_call_to_directive(part.function_call.name, dict(part.function_call.args))
                         if directive:
                             spawn_directives.append(directive)
                     elif hasattr(part, "text") and part.text:

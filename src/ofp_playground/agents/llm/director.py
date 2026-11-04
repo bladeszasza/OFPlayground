@@ -13,6 +13,15 @@ from ofp_playground.bus.message_bus import MessageBus
 
 logger = logging.getLogger(__name__)
 
+
+def _is_story_participant(uri: str) -> bool:
+    """Text participants a director / show runner hands story beats to."""
+    from ofp_playground.agents import uris
+
+    return uris.uri_kind(uri) not in (
+        uris.MEDIA_KINDS | {uris.FLOOR, uris.OBSERVER, uris.PERCEPTION, uris.VISION}
+    )
+
 DIRECTOR_SYSTEM_PROMPT = """You are {name}, the NARRATIVE DIRECTOR of a collaborative multi-agent story.
 
 Story outline — follow this exactly, one part per round:
@@ -82,7 +91,7 @@ class DirectorAgent(HuggingFaceAgent):
         for uri, name in self._name_registry.items():
             if uri == self.speaker_uri:
                 continue
-            if any(k in uri for k in ("image", "video", "audio", "floor-manager")):
+            if not _is_story_participant(uri):
                 continue
             names.append(name)
         return names

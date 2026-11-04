@@ -310,6 +310,35 @@ class GradioRenderer:
             return list(self._history)
 
 
+class GradioFloorEvents:
+    """Floor-manager renderer adapter for the web UI.
+
+    The floor manager reports assignments, round boundaries, auto-accepts and
+    the final manuscript through its renderer. In `ofp-playground start` those
+    go to the terminal; this adapter sends them to the web chat instead so both
+    UIs show the same session events. Utterances themselves already reach the
+    chat as OFP envelopes, so ``show_utterance`` is a no-op here.
+    """
+
+    def __init__(self, web_renderer: GradioRenderer, show_floor_events: bool = False):
+        self._web = web_renderer
+        self.show_floor_events = show_floor_events
+
+    def add_agent(self, speaker_uri: str, name: str) -> None:
+        self._web.add_agent(speaker_uri, name)
+
+    def show_system_event(self, message: str) -> None:
+        self._web.add_system_event(message)
+
+    def show_utterance(self, *args, **kwargs) -> None:
+        return None
+
+    def show_manuscript(self, text: str, filepath: str | None = None) -> None:
+        words = len(text.split())
+        where = f" — saved to {filepath}" if filepath else ""
+        self._web.add_system_event(f"📖 Final manuscript ready ({words} words){where}")
+
+
 # ── Background queue drainer ──────────────────────────────────────────────────
 
 async def _drain_output_queue(
@@ -355,6 +384,15 @@ _CUSTOM_CSS = """
 
 
 # ── Spawn panel ───────────────────────────────────────────────────────────────
+
+# Agent task subtypes offered by the web spawn panel (CLI: provider:<type>:Name).
+SPAWN_TASK_TYPES = (
+    "text-generation", "orchestrator", "code-generation", "text-to-image", "image-to-text",
+    "text-to-video", "text-to-music", "image-text-to-text", "image-classification",
+    "object-detection", "image-segmentation", "token-classification", "text-classification",
+    "summarization", "showrunner",
+)
+_EXTRA_FLAGS_RE = re.compile(r"(?:\s*-(?:timeout|max-retries|max-tokens)\s+\d+(?:\.\d+)?)+\s*")
 
 def _build_spawn_panel(gr, loop, spawn_fn, gradio_renderer):
     """Build the 'Spawn Agent' accordion inside the right column.
@@ -403,9 +441,23 @@ def _build_spawn_panel(gr, loop, spawn_fn, gradio_renderer):
         name_box = gr.Textbox(label="Name", placeholder="e.g. Copywriter")
         provider_dd = gr.Dropdown(
             choices=["demo", "demo:rate-limit", "demo:input-wait", "demo:silent", "demo:stalled",
-                     "hf", "anthropic", "openai", "google"],
+                     "hf", "anthropic", "openai", "google", "remote"],
             value="hf",
             label="Provider",
+        )
+        # Same task subtypes as `--agent provider:<type>:Name` / `-type` in the CLI.
+        type_dd = gr.Dropdown(
+            choices=list(SPAWN_TASK_TYPES),
+            value="text-generation",
+            label="Type",
+        )
+        remote_box = gr.Textbox(
+            label="Remote agent (provider = remote)",
+            placeholder="slug (polly, arxiv, wikipedia, …) or https:// OFP endpoint",
+        )
+        flags_box = gr.Textbox(
+            label="Extra flags (optional)",
+            placeholder="-timeout 60 -max-retries 2 -max-tokens 4000",
         )
         model_box = gr.Dropdown(
             label="Model (optional)",
@@ -450,17 +502,31 @@ def _build_spawn_panel(gr, loop, spawn_fn, gradio_renderer):
             category_dd.change(_filter_by_category, [category_dd], [agent_dd])
             agent_dd.change(_load_agent, [agent_dd], [system_box, name_box])
 
-        def _do_spawn(provider, name, system, model):
-            name = name.strip()
-            system = system.strip()
-            if not name:
-                return "**Name is required.**"
-            if not system:
-                return "**System prompt is required.**"
-            parts = [f"-provider {provider}", f"-name {name}", f"-system {system}"]
-            if model and model.strip():
-                parts.append(f"-model {model.strip()}")
-            spec = " ".join(parts)
+        def _do_spawn(provider, name, system, model, agent_type, remote_target, extra_flags):
+            name = (name or "").strip()
+            system = (system or "").strip()
+            if provider == "remote":
+                target = (remote_target or "").strip() or name
+                if not target:
+                    return "**Enter a remote agent slug or URL.**"
+                spec = f"remote {target}"
+            else:
+                if not name:
+                    return "**Name is required.**"
+                if not system:
+                    return "**System prompt is required.**"
+                flags = (extra_flags or "").strip()
+                if flags and not _EXTRA_FLAGS_RE.fullmatch(flags):
+                    return "**Extra flags accept only -timeout N, -max-retries N, -max-tokens N.**"
+                parts = [f"-provider {provider}", f"-name {name}"]
+                if agent_type and agent_type != "text-generation":
+                    parts.append(f"-type {agent_type}")
+                if model and model.strip():
+                    parts.append(f"-model {model.strip()}")
+                if flags:
+                    parts.append(flags)
+                parts.append(f"-system {system}")
+                spec = " ".join(parts)
             future = asyncio.run_coroutine_threadsafe(spawn_fn(spec), loop)
             try:
                 future.result(timeout=30)
@@ -470,11 +536,11 @@ def _build_spawn_panel(gr, loop, spawn_fn, gradio_renderer):
             except Exception:
                 logger.exception("Web participant add failed")
                 return "**Agent could not be added. Check the session messages for details.**"
-            return f"Added **{name}** ({provider})."
+            return f"Added **{name or remote_target}** ({provider})."
 
         spawn_btn.click(
             _do_spawn,
-            [provider_dd, name_box, system_box, model_box],
+            [provider_dd, name_box, system_box, model_box, type_dd, remote_box, flags_box],
             [spawn_msg],
         )
 

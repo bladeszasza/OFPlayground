@@ -5,7 +5,7 @@ import asyncio
 import math
 import time
 import uuid
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -15,6 +15,72 @@ if TYPE_CHECKING:
 from ofp_playground.agents.registry import AgentRegistry
 from ofp_playground.bus.message_bus import MessageBus
 from ofp_playground.floor.manager import FloorManager
+
+
+async def seed_topic(topic: str, floor: FloorManager, bus: MessageBus) -> None:
+    """Broadcast the session topic as a floor-manager utterance."""
+    from openfloor import (
+        Conversation,
+        DialogEvent,
+        Envelope,
+        Sender,
+        TextFeature,
+        Token,
+        UtteranceEvent,
+    )
+
+    from ofp_playground.bus.message_bus import FLOOR_MANAGER_URI
+
+    de = DialogEvent(
+        speakerUri=FLOOR_MANAGER_URI,
+        id=str(uuid.uuid4()),
+        features={"text": TextFeature(tokens=[Token(value=topic)])},
+    )
+    envelope = Envelope(
+        sender=Sender(speakerUri=FLOOR_MANAGER_URI, serviceUrl="local://floor-manager"),
+        conversation=Conversation(id=floor.conversation_id),
+        events=[UtteranceEvent(dialogEvent=de)],
+    )
+    await bus.send(envelope)
+
+
+async def kickoff(
+    floor: FloorManager,
+    bus: MessageBus,
+    *,
+    topic: str | None,
+    human: Any | None = None,
+    notify: Callable[[str], None] | None = None,
+    delay: float = 1.0,
+    seed: Callable[[str, FloorManager, MessageBus], Coroutine[Any, Any, None]] | None = None,
+) -> None:
+    """Start a session the same way in the CLI, the web UI and the canvas.
+
+    Seeds the topic (and the memory goal), frees a floor the human was holding
+    at start-up so agents can answer the topic, then gives the first grant to
+    :meth:`FloorManager.kickoff_target`.  There is no sleep between seeding and
+    granting: the topic is already in every agent queue (``put_nowait``), and a
+    gap would let early floor requests race the deliberate first grant.
+    """
+    await asyncio.sleep(delay)  # let freshly spawned agents register and publish manifests
+    if floor._stop_event.is_set():
+        return
+    if topic:
+        if notify:
+            notify(f'Topic: "{topic}"')
+        floor._memory_store.seed_goal(topic)
+        await (seed or seed_topic)(topic, floor, bus)
+        if floor._stop_event.is_set():
+            return
+        if human is not None and floor.floor_holder == human.speaker_uri:
+            # The human requested the floor at start-up (SEQUENTIAL). Release it
+            # so agents answer the topic first; the human re-queues for a turn.
+            human._has_floor = False
+            await human.yield_floor()
+            await human.request_floor()
+    target = floor.kickoff_target(has_topic=bool(topic), has_human=human is not None)
+    if target is not None and floor.floor_holder != target:
+        await floor.grant_to(target)
 
 
 class SessionService:
@@ -57,6 +123,57 @@ class SessionService:
         except asyncio.QueueFull as exc:
             raise ValueError("Human input queue is full; wait for pending input") from exc
         self.notify_input()
+
+    # ── Floor commands shared by every human input (CLI, web chat, canvas) ──
+
+    FLOOR_COMMANDS = ("grant", "pass", "floor", "agents")
+
+    def _human(self, speaker_uri: str | None) -> Any | None:
+        return self.registry.get(speaker_uri) if speaker_uri else None
+
+    async def floor_command(self, text: str, human_uri: str | None = None) -> str | None:
+        """Run a ``/grant`` / ``/pass`` / ``/floor`` / ``/agents`` command.
+
+        Returns the message to show the user, or ``None`` when *text* is not a
+        floor command (so the caller can handle or reject it).
+        """
+        stripped = text.strip()
+        if not stripped.startswith("/"):
+            return None
+        parts = stripped[1:].split(maxsplit=1)
+        cmd = parts[0].lower() if parts else ""
+        args = parts[1].strip() if len(parts) > 1 else ""
+        if cmd not in self.FLOOR_COMMANDS:
+            return None
+        floor = self.floor
+        if cmd == "agents":
+            names = [
+                f"{name}{' 🎤' if uri in floor.floor_holders else ''}"
+                for uri, name in floor.active_agents.items()
+            ]
+            return "Participants: " + (", ".join(names) or "none")
+        if cmd == "floor":
+            holders = [floor.active_agents.get(u, u) for u in floor.floor_holders]
+            waiting = [floor.active_agents.get(u, u) for u in floor.floor_queue]
+            msg = f"Floor ({floor.policy.value}): {', '.join(holders) or 'nobody'}"
+            if waiting:
+                msg += f" · waiting: {', '.join(waiting)}"
+            return msg
+        if cmd == "pass":
+            human = self._human(human_uri)
+            if human is None or not hasattr(human, "pass_turn"):
+                return "Only a human participant can pass a turn"
+            return "Turn passed" if await human.pass_turn() else "You don't hold the floor"
+        # /grant NAME — moderator override (any policy)
+        if not args:
+            return "Usage: /grant <agent name>"
+        uri = floor._resolve_agent_uri_by_name(args)
+        if uri is None:
+            return f"Agent '{args}' not found. Use /agents to list participants."
+        if uri in floor._draining_agents:
+            return f"{args} is leaving the session and cannot take the floor"
+        await floor.moderator_grant(uri)
+        return f"Floor granted to {floor.active_agents.get(uri, args)}"
 
     async def enable_status(self, connection: StatusConnection | None = None) -> None:
         import httpx
@@ -125,13 +242,22 @@ class SessionService:
     async def _detach(self, speaker_uri: str) -> None:
         """Detach first so queued/late output cannot re-enter the conversation."""
         async with self._lock:
+            # Only an in-flight worker's removal hands the floor back to the
+            # orchestrator. Removing anyone else (e.g. the orchestrator's own
+            # [KICK] while it holds the floor) must not grant it a second turn.
+            was_in_flight_worker = (
+                self.floor._orchestrator_uri is not None
+                and speaker_uri != self.floor._orchestrator_uri
+                and self.floor._is_expected_worker(speaker_uri)
+            )
+            name = self.floor.active_agents.get(speaker_uri, speaker_uri.split(":")[-1])
             next_holder = self.floor.unregister_agent(speaker_uri)
             await self.bus.unregister(speaker_uri)
             await self.registry.stop_agent(speaker_uri)
             if next_holder is not None:
                 await self.floor.grant_to(next_holder)
-            elif self.floor._orchestrator_uri and self.floor._assigned_uri is None:
-                await self.floor._maybe_return_floor_to_orchestrator()
+            elif was_in_flight_worker:
+                await self.floor._report_worker_removed(name)
 
     async def set_governance(self, speaker_uri: str, value: str, *, source: str = "operator") -> dict[str, Any]:
         async with self._governance_lock:

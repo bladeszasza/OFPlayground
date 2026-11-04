@@ -138,13 +138,18 @@ class TerminalRenderer:
         self._console.print(Panel(
             "[bold]Available Commands:[/bold]\n"
             "  [cyan]/spawn[/cyan] <type> <name> [description]  — Spawn LLM agent\n"
-            "  [cyan]/connect[/cyan] <url> [name]               — Connect remote OFP agent\n"
+            "  [cyan]/add[/cyan] <agent spec>                   — Spawn from a full --agent spec\n"
+            "  [cyan]/connect[/cyan] <slug-or-url>              — Connect remote OFP agent\n"
             "  [cyan]/agents[/cyan]                             — List active agents\n"
-            "  [cyan]/floor[/cyan]                              — Show floor status\n"
+            "  [cyan]/floor[/cyan]                              — Show holder and waiting queue\n"
+            "  [cyan]/grant[/cyan] <name>                       — Give an agent the floor (moderator)\n"
+            "  [cyan]/pass[/cyan]                               — Give up your turn without speaking\n"
             "  [cyan]/history[/cyan] [n]                        — Show message history\n"
-            "  [cyan]/grant[/cyan] <name>                       — Grant floor (moderated mode)\n"
             "  [cyan]/kick[/cyan] <name>                        — Remove agent\n"
-            "  [cyan]/quit[/cyan]                               — Exit",
+            "  [cyan]/quit[/cyan]                               — Exit\n"
+            "\n"
+            "[dim]MODERATED policy: you are the chair — address an agent by name\n"
+            "('MacroAnalyst, your view?') or /grant it to give it the floor.[/dim]",
             title="Help",
             style="green",
         ))
