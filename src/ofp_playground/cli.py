@@ -162,8 +162,8 @@ def _parse_agent_spec(spec: str) -> tuple[str, str, str, str | None, int | None,
 
     # Colon-separated format.
     # Supports both:
-    #   type:name[:description[:model]]              e.g. openai:Artbot:painter
-    #   type:subtype:name[:description[:model]]      e.g. openai:text-to-image:Artbot:painter
+    #   provider:name[:description[:model]]              e.g. openai:Artbot:painter
+    #   provider:subtype:name[:description[:model]]      e.g. openai:text-to-image:Artbot:painter
     TASK_SUBTYPES = {
         "text-to-image", "image-to-text", "text-to-video", "text-generation", "text-to-music",
         "image-text-to-text", "image-classification", "object-detection",
@@ -201,7 +201,7 @@ def _parse_agent_spec(spec: str) -> tuple[str, str, str, str | None, int | None,
 
     demo_mode = head[0].lower() == "demo" and head[1].lower() in {"normal", "rate-limit", "input-wait", "silent", "stalled"}
     if len(head) >= 3 and (head[1].lower() in TASK_SUBTYPES or demo_mode):
-        # type:subtype:name[:rest]
+        # provider:subtype:name[:rest]
         agent_type = f"{head[0]}:{head[1]}".lower()
         name = head[2]
         rest = head[3] if len(head) > 3 else ""
@@ -211,7 +211,7 @@ def _parse_agent_spec(spec: str) -> tuple[str, str, str, str | None, int | None,
             description = f"I am {name}, an AI assistant."
             model_override = None
     else:
-        # type:name[:rest]
+        # provider:name[:rest]
         agent_type = head[0].lower()
         name = head[1]
         rest = ":".join(head[2:]) if len(head) > 2 else ""

@@ -41,7 +41,7 @@ cd canvas/frontend && npm install && npm run build
 
 Session flags shared by `start`, `web` and `canvas` (canvas uses them to pre-populate the graph): `--policy`, `--agent` (repeatable), `--remote` (remote agent slug/URL, repeatable), `--topic`, `--no-human` (fully autonomous sessions), `--max-turns`, `--human-name` (display name for the human participant), `--show-floor-events` (show grantFloor/revokeFloor/requestFloor events; hidden by default). `start`/`web` also take `-v`/`--verbose`. Keep the three surfaces in parity. [`docs/interfaces.md`](docs/interfaces.md) maps every option and runtime control across CLI/web/canvas, and `TestSurfaceParity` in `tests/test_floor_delegation.py` guards it.
 
-Tests use `async def` without `@pytest.mark.asyncio` — `asyncio_mode = "auto"` is set in `pyproject.toml`. Ruff enforces `line-length = 100`, `target-version = "py312"`. CI's mypy/ruff are the locked versions; on Python 3.13 mypy mis-parses a `# type:`-looking comment in `cli.py`, so type-check on Python 3.12 (`uv sync --locked --python 3.12 …`).
+Tests use `async def` without `@pytest.mark.asyncio` — `asyncio_mode = "auto"` is set in `pyproject.toml`. Ruff enforces `line-length = 100`, `target-version = "py312"`. CI runs the locked mypy/ruff on Python 3.12 and 3.13 (`.github/workflows/checks.yml`: pytest, `ruff check src/ canvas/backend`, `mypy src/ canvas/backend`, `scripts/check_docs.py`); run them from the `uv sync --locked` environment. Unlocked tool installs report spurious import errors. Avoid comments that begin with `type:`, because mypy reads them as type comments.
 
 ## Architecture
 
