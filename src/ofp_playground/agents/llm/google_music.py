@@ -14,7 +14,6 @@ import re
 import wave
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from openfloor import Capability, Envelope, Identification, Manifest, SupportedLayers
 
@@ -78,7 +77,7 @@ def _recover_lyria_prompt_from_manuscript(raw_text: str) -> str | None:
     )
     return clean.strip() or None
 
-def _extract_image_path_from_directive(text: str) -> Optional[str]:
+def _extract_image_path_from_directive(text: str) -> str | None:
     """Scan the STORY SO FAR block for the most recent [image by ...]: /path entry.
 
     Used by the music agent when the pipeline generates a cover image first and
@@ -130,8 +129,8 @@ class GeminiMusicAgent(BasePlaygroundAgent):
         self._api_key = api_key
         self._duration_seconds = duration_seconds
         self._has_floor = False
-        self._last_text: Optional[str] = None
-        self._raw_prompt: Optional[str] = None  # directive task from orchestrator
+        self._last_text: str | None = None
+        self._raw_prompt: str | None = None  # directive task from orchestrator
         self._output_dir: Path = OUTPUT_MUSIC_DIR
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -150,6 +149,8 @@ class GeminiMusicAgent(BasePlaygroundAgent):
     def _build_manifest(self) -> Manifest:
         return Manifest(
             identification=Identification(
+                organization="OFP Playground",
+                synopsis=f"Local agent: {self._name}",
                 speakerUri=self._speaker_uri,
                 serviceUrl=self._service_url,
                 conversationalName=self._name,
@@ -274,7 +275,7 @@ class GeminiMusicAgent(BasePlaygroundAgent):
     # Generation: generateContent API (Lyria 3 Clip / Pro)
     # ------------------------------------------------------------------
 
-    async def _do_generate_content(self, prompt: str, image_path: Optional[str] = None) -> Optional[Path]:
+    async def _do_generate_content(self, prompt: str, image_path: str | None = None) -> Path | None:
         """Generate music via client.models.generate_content() for Clip/Pro models.
 
         When *image_path* is provided the image is passed as a second Part in the
@@ -290,6 +291,7 @@ class GeminiMusicAgent(BasePlaygroundAgent):
 
             config = types.GenerateContentConfig(response_modalities=["AUDIO", "TEXT"])
 
+            contents: list[types.Part]
             # Build contents: text-only, or text + cover image for visual inspiration
             if image_path:
                 try:
@@ -301,19 +303,16 @@ class GeminiMusicAgent(BasePlaygroundAgent):
                     }
                     img_mime = _mime_map.get(ext, "image/jpeg")
                     image_part = types.Part.from_bytes(data=img_bytes, mime_type=img_mime)
-                    contents = [prompt, image_part]
+                    contents = [types.Part.from_text(text=prompt), image_part]
                     logger.info(
                         "[%s] Including cover image in Lyria generation: %s (%s)",
                         self._name, image_path, img_mime,
                     )
-                except Exception as e:
-                    logger.warning(
-                        "[%s] Could not load image %s: %s — falling back to text-only",
-                        self._name, image_path, e,
-                    )
-                    contents = prompt
+                except Exception:
+                    logger.warning('[%s] Could not load image %s: see traceback — falling back to text-only', self._name, image_path, exc_info=True)
+                    contents = [types.Part.from_text(text=prompt)]
             else:
-                contents = prompt
+                contents = [types.Part.from_text(text=prompt)]
 
             logger.info("[%s] Calling generateContent with model=%s prompt=%s…", self._name, self._model, prompt[:80])
 
@@ -322,7 +321,7 @@ class GeminiMusicAgent(BasePlaygroundAgent):
                 None,
                 lambda: client.models.generate_content(
                     model=self._model,
-                    contents=contents,
+                    contents=types.Content(role="user", parts=contents),
                     config=config,
                 ),
             )
@@ -335,7 +334,7 @@ class GeminiMusicAgent(BasePlaygroundAgent):
                     "Check that the prompt doesn't trigger safety filters."
                 )
 
-            audio_data: Optional[bytes] = None
+            audio_data: bytes | None = None
             audio_mime: str = "audio/mpeg"
             for part in (response.parts or []):
                 if part.inline_data is not None:
@@ -368,7 +367,7 @@ class GeminiMusicAgent(BasePlaygroundAgent):
     # Generation: RealTime WebSocket API (models/lyria-realtime-exp)
     # ------------------------------------------------------------------
 
-    async def _do_generate_realtime(self, prompt: str, duration_seconds: int) -> Optional[Path]:
+    async def _do_generate_realtime(self, prompt: str, duration_seconds: int) -> Path | None:
         """Generate music via the Lyria RealTime streaming WebSocket API."""
         from google import genai
         from google.genai import types
@@ -429,11 +428,11 @@ class GeminiMusicAgent(BasePlaygroundAgent):
         prompt: str,
         duration_seconds: int,
         max_retries: int = 3,
-        image_path: Optional[str] = None,
-    ) -> Optional[Path]:
+        image_path: str | None = None,
+    ) -> Path | None:
         # generateContent (Clip/Pro) can take longer for full-length songs
         timeout = 180.0 if not self._is_realtime_model() else 60.0
-        last_error: Optional[Exception] = None
+        last_error: Exception | None = None
         for attempt in range(1, max_retries + 1):
             try:
                 if self._is_realtime_model():
@@ -441,18 +440,13 @@ class GeminiMusicAgent(BasePlaygroundAgent):
                 else:
                     coro = self._do_generate_content(prompt, image_path=image_path)
                 return await asyncio.wait_for(coro, timeout=timeout)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.error("[%s] Lyria timed out after %ds (attempt %d/%d)", self._name, int(timeout), attempt, max_retries)
-                last_error = asyncio.TimeoutError()
+                last_error = TimeoutError()
             except Exception as e:
                 err = str(e)
                 if "CERTIFICATE_VERIFY_FAILED" in err or "SSL" in err:
-                    logger.error(
-                        "[%s] SSL certificate error — fix with: "
-                        "/Applications/Python*/Install\\ Certificates.command  "
-                        "or: pip install certifi",
-                        self._name,
-                    )
+                    logger.exception('[%s] SSL certificate error — fix with: /Applications/Python*/Install\\ Certificates.command  or: pip install certifi', self._name)
                     return None  # SSL errors won't recover on retry
                 logger.warning("[%s] Lyria attempt %d/%d failed: %s", self._name, attempt, max_retries, e)
                 last_error = e
@@ -508,7 +502,7 @@ class GeminiMusicAgent(BasePlaygroundAgent):
             # Extract cover image from STORY SO FAR for image-to-music generation.
             # The music agent's directive already contains the full text (DOTALL regex),
             # so _raw_prompt includes the injected manuscript from the FloorManager.
-            image_path: Optional[str] = None
+            image_path: str | None = None
             if self._raw_prompt and not self._is_realtime_model():
                 image_path = _extract_image_path_from_directive(self._raw_prompt)
                 if image_path:
@@ -530,8 +524,8 @@ class GeminiMusicAgent(BasePlaygroundAgent):
                         text_desc, "audio", mime, str(path.resolve())
                     )
                 )
-        except Exception as e:
-            logger.error("[%s] Floor grant error: %s", self._name, e)
+        except Exception:
+            logger.exception('[%s] Floor grant error: see traceback', self._name)
         finally:
             self._has_floor = False
             self._last_text = None
@@ -549,6 +543,7 @@ class GeminiMusicAgent(BasePlaygroundAgent):
                 self._has_floor = False
             elif event_type == "invite":
                 from openfloor import Event, To
+
                 from ofp_playground.bus.message_bus import FLOOR_MANAGER_URI
                 accept_envelope = Envelope(
                     sender=self._make_sender(),
@@ -574,9 +569,9 @@ class GeminiMusicAgent(BasePlaygroundAgent):
                 try:
                     envelope = await asyncio.wait_for(self._queue.get(), timeout=1.0)
                     await self._dispatch(envelope)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
-                except Exception as e:
-                    logger.error("[%s] error: %s", self._name, e, exc_info=True)
+                except Exception:
+                    logger.exception('[%s] error: see traceback', self._name)
         finally:
             self._running = False

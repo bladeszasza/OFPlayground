@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from google import genai
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from openfloor import Capability, Envelope, Identification, Manifest, SupportedLayers
 
@@ -139,17 +142,19 @@ class GeminiImageAgent(BasePlaygroundAgent):
         self._style = style
         self._model = model or DEFAULT_IMAGE_MODEL
         self._api_key = api_key
-        self._client = None
+        self._client: genai.Client | None = None
         self._has_floor = False
-        self._last_text: Optional[str] = None
-        self._raw_prompt: Optional[str] = None
-        self._last_directive_text: Optional[str] = None  # full DIRECTIVE text incl. STORY SO FAR
+        self._last_text: str | None = None
+        self._raw_prompt: str | None = None
+        self._last_directive_text: str | None = None  # full DIRECTIVE text incl. STORY SO FAR
         self._output_dir: Path = OUTPUT_DIR
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
     def _build_manifest(self) -> Manifest:
         return Manifest(
             identification=Identification(
+                organization="OFP Playground",
+                synopsis=f"Local agent: {self._name}",
                 speakerUri=self._speaker_uri,
                 serviceUrl=self._service_url,
                 conversationalName=self._name,
@@ -194,11 +199,11 @@ class GeminiImageAgent(BasePlaygroundAgent):
             scene = " ".join(words[:40])
         return f"{self._style}, {scene}"
 
-    async def _generate_image(self, prompt: str) -> Optional[tuple[Path, str]]:
+    async def _generate_image(self, prompt: str) -> tuple[Path, str] | None:
         """Generate image with retries across all fallback models. Returns (path, model_used)."""
         loop = asyncio.get_running_loop()
 
-        def _call(model: str) -> tuple[Optional[Path], str]:
+        def _call(model: str) -> tuple[Path | None, str]:
             from google.genai import types
             client = self._get_client()
             response = client.models.generate_content(
@@ -256,10 +261,7 @@ class GeminiImageAgent(BasePlaygroundAgent):
                 except Exception as e:
                     err_str = str(e)
                     if "503" in err_str or "UNAVAILABLE" in err_str or "400" in err_str or "invalid" in err_str.lower():
-                        logger.warning(
-                            "[%s] %s non-retryable error (%s), skipping to next model",
-                            self._name, model, err_str[:120],
-                        )
+                        logger.warning('[%s] %s non-retryable error (%s), skipping to next model', self._name, model, err_str[:120], exc_info=True)
                         break  # don't retry this model
                     logger.warning(
                         "[%s] Gemini error on %s attempt %d/%d: %s",
@@ -339,8 +341,8 @@ class GeminiImageAgent(BasePlaygroundAgent):
                             text_desc, "image", mime, str(path.resolve())
                         )
                     )
-        except Exception as e:
-            logger.error("[%s] Floor grant error: %s", self._name, e)
+        except Exception:
+            logger.exception('[%s] Floor grant error: see traceback', self._name)
         finally:
             self._has_floor = False
             self._last_text = None
@@ -359,6 +361,7 @@ class GeminiImageAgent(BasePlaygroundAgent):
                 self._has_floor = False
             elif event_type == "invite":
                 from openfloor import Event, To
+
                 from ofp_playground.bus.message_bus import FLOOR_MANAGER_URI
                 accept_envelope = Envelope(
                     sender=self._make_sender(),
@@ -384,10 +387,10 @@ class GeminiImageAgent(BasePlaygroundAgent):
                 try:
                     envelope = await asyncio.wait_for(self._queue.get(), timeout=1.0)
                     await self._dispatch(envelope)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
-                except Exception as e:
-                    logger.error("[%s] error: %s", self._name, e, exc_info=True)
+                except Exception:
+                    logger.exception('[%s] error: see traceback', self._name)
         finally:
             self._running = False
 
@@ -416,13 +419,15 @@ class GeminiVisionAgent(BaseLLMAgent):
         # Override URI from BaseLLMAgent's llm- prefix to gvision- prefix
         self._speaker_uri = GEMINI_VISION_URI_TEMPLATE.format(name=name.lower().replace(" ", "-"))
         self._service_url = f"local://gvision-{name.lower()}"
-        self._client = None
-        self._pending_image: Optional[tuple[str, str]] = None  # (file_path, mime_type)
-        self._pending_image_context: Optional[str] = None
+        self._client: genai.Client | None = None
+        self._pending_image: tuple[str, str] | None = None  # (file_path, mime_type)
+        self._pending_image_context: str | None = None
 
     def _build_manifest(self) -> Manifest:
         return Manifest(
             identification=Identification(
+                organization="OFP Playground",
+                synopsis=f"Local agent: {self._name}",
                 speakerUri=self._speaker_uri,
                 serviceUrl=self._service_url,
                 conversationalName=self._name,
@@ -443,7 +448,7 @@ class GeminiVisionAgent(BaseLLMAgent):
             self._client = genai.Client(api_key=self._api_key)
         return self._client
 
-    def _extract_image_from_envelope(self, envelope: Envelope) -> Optional[tuple[str, str]]:
+    def _extract_image_from_envelope(self, envelope: Envelope) -> tuple[str, str] | None:
         """Return (file_path, mime_type) for the first image feature found in envelope."""
         for event in (envelope.events or []):
             de = getattr(event, "dialogEvent", None)
@@ -475,7 +480,7 @@ class GeminiVisionAgent(BaseLLMAgent):
     async def _quick_check(self, prompt: str) -> str:
         return "YES"  # Vision agent always analyzes images when present
 
-    async def _generate_response(self, participants: list[str]) -> Optional[str]:
+    async def _generate_response(self, participants: list[str]) -> str | None:
         if not self._pending_image:
             return None
 
@@ -485,8 +490,8 @@ class GeminiVisionAgent(BaseLLMAgent):
         try:
             image_bytes = Path(path).read_bytes()
             mime_type = _sniff_mime(Path(path), fallback=mime_type)
-        except Exception as e:
-            logger.error("[%s] Could not read image %s: %s", self._name, path, e)
+        except Exception:
+            logger.exception('[%s] Could not read image %s: see traceback', self._name, path)
             return None
 
         loop = asyncio.get_running_loop()

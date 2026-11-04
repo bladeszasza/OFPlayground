@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from openfloor import Envelope
 
 if TYPE_CHECKING:
-    from ofp_playground.trace.collector import EventCollector
+    from ofp_playground.trace.collector import TraceCollector
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +24,9 @@ class MessageBus:
 
     def __init__(self):
         self._queues: dict[str, asyncio.Queue] = {}
+        self._departed: set[str] = set()
         self._lock = asyncio.Lock()
-        self._collector: EventCollector | None = None
+        self._collector: TraceCollector | None = None
         self._collector_breakout_id: str | None = None
         self._collector_scope_id: str | None = None
         self._collector_scope_kind: str = "main"
@@ -33,7 +34,7 @@ class MessageBus:
 
     def set_collector(
         self,
-        collector: "EventCollector",
+        collector: TraceCollector,
         breakout_id: str | None = None,
         *,
         scope_id: str | None = None,
@@ -65,11 +66,13 @@ class MessageBus:
     async def register(self, speaker_uri: str, queue: asyncio.Queue) -> None:
         async with self._lock:
             self._queues[speaker_uri] = queue
+            self._departed.discard(speaker_uri)
             logger.debug("Registered agent: %s", speaker_uri)
 
     async def unregister(self, speaker_uri: str) -> None:
         async with self._lock:
             self._queues.pop(speaker_uri, None)
+            self._departed.add(speaker_uri)
             logger.debug("Unregistered agent: %s", speaker_uri)
 
     async def send(self, envelope: Envelope) -> None:
@@ -79,6 +82,8 @@ class MessageBus:
         Otherwise broadcast to all except sender. Floor manager always gets a copy.
         """
         sender_uri = envelope.sender.speakerUri if envelope.sender else None
+        if sender_uri in self._departed:
+            return
 
         # Determine target URIs
         targeted_uris: set[str] = set()
@@ -103,11 +108,17 @@ class MessageBus:
             recipients.add(FLOOR_MANAGER_URI)
 
         async with self._lock:
+            if sender_uri in self._departed:
+                return
+            outcomes: dict[str, str] = {}
             for uri in recipients:
+                outcomes[uri] = "unregistered"
                 if uri in self._queues:
                     try:
                         self._queues[uri].put_nowait(envelope)
+                        outcomes[uri] = "queued"
                     except asyncio.QueueFull:
+                        outcomes[uri] = "dropped-queue-full"
                         logger.warning("Queue full for agent %s, dropping envelope", uri)
 
         if self._collector is not None:
@@ -119,6 +130,7 @@ class MessageBus:
                 scope_id=self._collector_scope_id,
                 scope_kind=self._collector_scope_kind,
                 parent_conversation_id=self._collector_parent_conversation_id,
+                delivery_outcomes=outcomes,
             )
 
     async def send_private(self, envelope: Envelope, target_uri: str) -> None:
@@ -126,16 +138,25 @@ class MessageBus:
 
         Use this for directed utterances that should not be seen by other agents.
         """
+        sender_uri = envelope.sender.speakerUri if envelope.sender else None
+        if sender_uri in self._departed:
+            return
         async with self._lock:
+            if sender_uri in self._departed:
+                return
             recipients = {target_uri, FLOOR_MANAGER_URI}
             sender_uri = envelope.sender.speakerUri if envelope.sender else None
             if sender_uri:
                 recipients.discard(sender_uri)
+            outcomes: dict[str, str] = {}
             for uri in recipients:
+                outcomes[uri] = "unregistered"
                 if uri in self._queues:
                     try:
                         self._queues[uri].put_nowait(envelope)
+                        outcomes[uri] = "queued"
                     except asyncio.QueueFull:
+                        outcomes[uri] = "dropped-queue-full"
                         logger.warning("Queue full for agent %s, dropping private envelope", uri)
 
         if self._collector is not None:
@@ -147,6 +168,7 @@ class MessageBus:
                 scope_id=self._collector_scope_id,
                 scope_kind=self._collector_scope_kind,
                 parent_conversation_id=self._collector_parent_conversation_id,
+                delivery_outcomes=outcomes,
             )
 
     @property

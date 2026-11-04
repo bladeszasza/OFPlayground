@@ -7,7 +7,6 @@ import re
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from openfloor import Envelope
 
@@ -78,13 +77,14 @@ class BaseCodingAgent(BaseLLMAgent, abc.ABC):
         bus: MessageBus,
         conversation_id: str,
         api_key: str,
-        model: Optional[str] = None,
+        model: str | None = None,
     ):
         if not synopsis:
             try:
                 from ofp_playground.agents.library import resolve_slug
                 synopsis = resolve_slug("@development/coding-agent")
             except (ValueError, Exception):
+                logger.exception("Operation failed at an application error boundary")
                 synopsis = "You are a senior software developer. Write, run, and validate code."
         super().__init__(
             name=name,
@@ -203,7 +203,7 @@ class BaseCodingAgent(BaseLLMAgent, abc.ABC):
             result = "\n".join(lines) if lines else "Coding task complete (no file output)."
             await self._send_final_and_yield(result)
         except Exception as e:
-            logger.error("[%s] Coding loop error: %s", self._name, e, exc_info=True)
+            logger.exception('[%s] Coding loop error: see traceback', self._name)
             await self._send_final_and_yield(f"Coding task failed: {str(e)[:200]}")
         finally:
             self._has_floor = False
@@ -214,6 +214,8 @@ class BaseCodingAgent(BaseLLMAgent, abc.ABC):
 class OpenAICodingAgent(BaseCodingAgent):
     """OpenAI Responses API + code_interpreter agentic loop."""
 
+    _model: str
+
     def __init__(
         self,
         name: str,
@@ -221,7 +223,7 @@ class OpenAICodingAgent(BaseCodingAgent):
         bus: MessageBus,
         conversation_id: str,
         api_key: str,
-        model: Optional[str] = None,
+        model: str | None = None,
     ):
         super().__init__(
             name=name,
@@ -327,7 +329,9 @@ class OpenAICodingAgent(BaseCodingAgent):
                 if not file_calls:
                     break
 
-                fn_outputs: list[dict] = []
+                from openai.types.responses import ResponseInputParam
+
+                fn_outputs: ResponseInputParam = []
                 for fc in file_calls:
                     raw = getattr(fc, "arguments", "{}")
                     args = json_mod.loads(raw) if isinstance(raw, str) else (raw or {})
@@ -374,8 +378,8 @@ class OpenAICodingAgent(BaseCodingAgent):
                     out_path.write_bytes(content.content)
                     saved_files.append(out_path)
                     await self._send_progress(f"Saved {out_path.name}")
-                except Exception as e:
-                    logger.error("[%s] Failed to save file %s: %s", self._name, file_id, e)
+                except Exception:
+                    logger.exception('[%s] Failed to save file %s: see traceback', self._name, file_id)
         finally:
             await dl_client.close()
         return output_text, saved_files

@@ -2,14 +2,9 @@
 from __future__ import annotations
 
 import os
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
-
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib  # type: ignore
 
 import tomli_w
 
@@ -26,10 +21,10 @@ class FloorConfig:
 
 @dataclass
 class ApiKeysConfig:
-    anthropic: Optional[str] = None
-    openai: Optional[str] = None
-    google: Optional[str] = None
-    huggingface: Optional[str] = None
+    anthropic: str | None = None
+    openai: str | None = None
+    google: str | None = None
+    huggingface: str | None = None
 
 
 @dataclass
@@ -55,16 +50,16 @@ class Settings:
     api_keys: ApiKeysConfig = field(default_factory=ApiKeysConfig)
     defaults: DefaultsConfig = field(default_factory=DefaultsConfig)
 
-    def get_anthropic_key(self) -> Optional[str]:
+    def get_anthropic_key(self) -> str | None:
         return self.api_keys.anthropic or os.environ.get("ANTHROPIC_API_KEY")
 
-    def get_openai_key(self) -> Optional[str]:
+    def get_openai_key(self) -> str | None:
         return self.api_keys.openai or os.environ.get("OPENAI_API_KEY")
 
-    def get_google_key(self) -> Optional[str]:
+    def get_google_key(self) -> str | None:
         return self.api_keys.google or os.environ.get("GOOGLE_API_KEY")
 
-    def get_huggingface_key(self) -> Optional[str]:
+    def get_huggingface_key(self) -> str | None:
         return (
             self.api_keys.huggingface
             or os.environ.get("HF_API_KEY")
@@ -72,7 +67,7 @@ class Settings:
         )
 
     @classmethod
-    def load(cls) -> "Settings":
+    def load(cls) -> Settings:
         settings = cls()
         if CONFIG_FILE.exists():
             with open(CONFIG_FILE, "rb") as f:
@@ -117,6 +112,7 @@ class Settings:
                 "vision_model_google": self.defaults.vision_model_google,
                 "music_model_google": self.defaults.music_model_google,
                 "video_model_google": self.defaults.video_model_google,
+                "llm_model_huggingface": self.defaults.llm_model_huggingface,
                 "relevance_filter": self.defaults.relevance_filter,
             },
         }

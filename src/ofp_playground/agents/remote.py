@@ -4,14 +4,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 import httpx
 from openfloor import Envelope
 
 from ofp_playground.agents.base import BasePlaygroundAgent
-from ofp_playground.bus.message_bus import MessageBus, FLOOR_MANAGER_URI
+from ofp_playground.bus.message_bus import FLOOR_MANAGER_URI, MessageBus
 
 logger = logging.getLogger(__name__)
 
@@ -99,11 +98,11 @@ class RemoteOFPAgent(BasePlaygroundAgent):
         self._remote_url = service_url
         self._timeout = timeout
         self._has_floor = False
-        self._pending_text: Optional[str] = None
-        self._pending_sender_uri: Optional[str] = None
+        self._pending_text: str | None = None
+        self._pending_sender_uri: str | None = None
 
     def _now_iso(self) -> str:
-        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
     def _make_base_payload(self, sender_uri: str, sender_service_url: str = "local://agent") -> dict:
         return {
@@ -162,8 +161,8 @@ class RemoteOFPAgent(BasePlaygroundAgent):
                 return
 
             logger.debug("[%s] Remote returned no manifest in invite response", self._name)
-        except Exception as e:
-            logger.warning("[%s] Could not fetch manifest from remote: %s", self._name, e)
+        except Exception:
+            logger.warning('[%s] Could not fetch manifest from remote: see traceback', self._name, exc_info=True)
 
     async def _handle_invite(self) -> None:
         """OFP invite: acknowledge and fetch remote manifest.
@@ -184,7 +183,7 @@ class RemoteOFPAgent(BasePlaygroundAgent):
         await self.send_envelope(accept_env)
         await self._fetch_and_publish_manifest()
 
-    async def _post_to_remote(self, text: str, sender_uri: str) -> Optional[str]:
+    async def _post_to_remote(self, text: str, sender_uri: str) -> str | None:
         """POST an utterance to the remote OFP endpoint, return response text."""
         payload = self._make_base_payload(sender_uri)
         payload["openFloor"]["events"] = [{
@@ -227,8 +226,8 @@ class RemoteOFPAgent(BasePlaygroundAgent):
 
         except httpx.TimeoutException:
             logger.warning("[%s] Remote timed out after %ss", self._name, self._timeout)
-        except Exception as e:
-            logger.error("[%s] Remote error: %s", self._name, e)
+        except Exception:
+            logger.exception('[%s] Remote error: see traceback', self._name)
 
         return None
 
@@ -279,8 +278,8 @@ class RemoteOFPAgent(BasePlaygroundAgent):
                 )
                 if response_text:
                     await self.send_envelope(self._make_utterance_envelope(response_text))
-        except Exception as e:
-            logger.error("[%s] Floor grant error: %s", self._name, e)
+        except Exception:
+            logger.exception('[%s] Floor grant error: see traceback', self._name)
         finally:
             self._has_floor = False
             self._pending_text = None
@@ -312,9 +311,9 @@ class RemoteOFPAgent(BasePlaygroundAgent):
                 try:
                     envelope = await asyncio.wait_for(self._queue.get(), timeout=1.0)
                     await self._dispatch(envelope)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
-                except Exception as e:
-                    logger.error("[%s] error: %s", self._name, e, exc_info=True)
+                except Exception:
+                    logger.exception('[%s] error: see traceback', self._name)
         finally:
             self._running = False

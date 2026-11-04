@@ -51,7 +51,7 @@ const STATE_COLOR: Record<AgentFloorState, string> = {
 }
 
 const STATE_LABEL: Record<AgentFloorState, string> = {
-  speaking: '🎙 speaking',
+  speaking: 'has floor',
   waiting: '⏳ waiting',
   requesting: '✋ requesting',
   error: '❌ error',
@@ -70,7 +70,9 @@ const TYPE_COLOR: Record<string, string> = {
 }
 
 export function AgentNode({ data }: { data: AgentNodeData }) {
-  const { onKick } = useCanvas()
+  const { onKick, sessionRunning } = useCanvas()
+  const [removing, setRemoving] = useState(false)
+  const [error, setError] = useState('')
   const [hovered, setHovered] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const prevFloorState = useRef<AgentFloorState>(data.floorState)
@@ -100,12 +102,7 @@ export function AgentNode({ data }: { data: AgentNodeData }) {
   const isManifest = data.floorState === 'manifest'
   const typeColor = data.agentType ? (TYPE_COLOR[data.agentType] ?? '#58a6ff') : null
 
-  const stateAnimStyle: React.CSSProperties =
-    isSpeaking  ? { ['--pulse-color' as string]: `${stateColor}88`, animation: 'ofp-pulse 1.6s ease-in-out infinite' } :
-    isRequesting? { animation: 'ofp-pulse-amber 1.4s ease-in-out infinite' } :
-    isYielding  ? { animation: 'ofp-flash-teal 1.5s ease-out forwards' } :
-    isManifest  ? { animation: 'ofp-flash-purple 1.5s ease-out forwards' } :
-    {}
+  const stateAnimStyle: React.CSSProperties = {}
 
   return (
     <div
@@ -154,7 +151,7 @@ export function AgentNode({ data }: { data: AgentNodeData }) {
                 <span key={delay} style={{
                   width: 4, height: 4, borderRadius: '50%', background: stateColor,
                   display: 'inline-block',
-                  animation: `ofp-dot 1.2s ease-in-out ${delay}s infinite`,
+                  opacity: 1,
                 }} />
               ))}
             </span>
@@ -166,6 +163,15 @@ export function AgentNode({ data }: { data: AgentNodeData }) {
       {data.model && (
         <div style={{ color: '#93a4b8', fontSize: 10, marginBottom: 6 }}>{data.model}</div>
       )}
+      <div style={{ fontSize: 11, color: '#bed1e8', margin: '8px 0', borderTop: '1px solid #303d50', paddingTop: 6 }}>
+        {data.asp ? <>
+          <div>Lifecycle: {data.asp.lifecycle} · Health: {data.asp.health}</div>
+          <div>Governance: {data.asp.governance}{data.asp.stale ? ' · STALE' : ''}</div>
+          <small>Health source: {data.asp.provenance}</small>
+        </> : 'ASP: no trusted status observation yet'}
+      </div>
+
+      {(data.pinned || data.replaying) && <div style={{ color: '#a9cce8', fontSize: 10, marginBottom: 6 }}>{data.pinned ? 'Pinned position' : ''}{data.pinned && data.replaying ? ' · ' : ''}{data.replaying ? 'Communication replay · ASP above is live' : ''}</div>}
 
       {/* Last message preview — always visible, cleared at start of new turn */}
       {lastMsgPreview && (
@@ -224,9 +230,18 @@ export function AgentNode({ data }: { data: AgentNodeData }) {
         </div>
       )}
 
-      {hovered && (
-        <button
-          onClick={() => onKick(data.name)}
+      {error && <div role="alert" style={{ color: '#fc8181' }}>{error}</div>}
+      <div style={{ opacity: hovered ? 1 : 0.85 }}>
+        <button className="nodrag nopan"
+          disabled={removing}
+          aria-label={`Remove ${data.name}${sessionRunning ? ' from session' : ' from configuration'}`}
+          onClick={async () => {
+            setRemoving(true)
+            setError('')
+            try { await onKick(data.name) }
+            catch (err) { setError(String(err)) }
+            finally { setRemoving(false) }
+          }}
           style={{
             position: 'absolute', top: 8, right: 8,
             background: '#6b2121', color: '#fc8181',
@@ -234,9 +249,9 @@ export function AgentNode({ data }: { data: AgentNodeData }) {
             borderRadius: 4, fontSize: 10, padding: '2px 6px', cursor: 'pointer',
           }}
         >
-          Kick
+          {removing ? 'Removing…' : 'Remove'}
         </button>
-      )}
+      </div>
     </div>
   )
 }

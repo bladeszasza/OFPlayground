@@ -79,9 +79,13 @@ class TestSafeResolve:
         resolved = _safe_resolve(tmp_path, "js/main.js")
         assert resolved == (tmp_path / "js" / "main.js").resolve()
 
-    def test_absolute_path_rejected(self, tmp_path):
+    @pytest.mark.parametrize("path", [
+        "/etc/passwd", r"\etc\passwd", r"C:\etc\passwd", "C:passwd",
+        r"\\server\share\passwd",
+    ])
+    def test_absolute_path_rejected(self, tmp_path, path):
         with pytest.raises(ValueError, match="Absolute"):
-            _safe_resolve(tmp_path, "/etc/passwd")
+            _safe_resolve(tmp_path, path)
 
     def test_parent_traversal_rejected(self, tmp_path):
         with pytest.raises(ValueError, match="traversal"):
@@ -94,7 +98,14 @@ class TestSafeResolve:
     def test_symlink_escape_rejected(self, tmp_path):
         """Symlinks pointing outside sandbox are rejected."""
         link_path = tmp_path / "escape"
-        link_path.symlink_to("/tmp")
+        outside = tmp_path.parent / f"{tmp_path.name}-outside"
+        outside.mkdir()
+        try:
+            link_path.symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                pytest.skip("Windows requires Developer Mode or symlink privileges")
+            raise
         with pytest.raises(ValueError, match="escapes"):
             _safe_resolve(tmp_path, "escape/test")
 

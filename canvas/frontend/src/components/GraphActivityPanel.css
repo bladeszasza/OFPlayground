@@ -1,0 +1,31 @@
+.graph-activity { color:#cbd6e3;background:#111923;border-top:1px solid #344254;font:12px ui-sans-serif,system-ui,sans-serif;padding:8px 10px;min-width:0;flex-shrink:0; }
+.graph-activity button,.graph-activity select { color:#d9e6f6;background:#1a2839;border:1px solid #38516e;border-radius:4px;padding:4px 7px;cursor:pointer;font:inherit; }
+.graph-activity button:disabled { opacity:.5;cursor:default; }
+.graph-activity button:focus-visible,.graph-activity input:focus-visible,.graph-activity select:focus-visible { outline:2px solid #79c0ff;outline-offset:2px; }
+.graph-activity-heading { display:flex;gap:10px;align-items:center;flex-wrap:wrap; }
+.graph-activity-heading strong { color:#8ac8ff; }
+.graph-activity-heading>span { flex:1;color:#a4b5c9;font-size:11px; }
+.graph-floor-summary { display:flex;gap:12px;flex-wrap:wrap;margin:7px 0;color:#d3e7ce; }
+.graph-activity-filters { display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0; }
+.graph-activity-filters label { display:flex;align-items:center;gap:4px; }
+.graph-activity-filters select { max-width:140px; }
+.graph-activity-filters input { flex:1;min-width:70px;accent-color:#79c0ff; }
+.graph-activity-list { max-height:114px;overflow:auto;display:flex;flex-direction:column;gap:3px; }
+.graph-activity-list>button { display:flex;gap:8px;text-align:left;background:#101822;border-color:#27394e;align-items:baseline; }
+.graph-activity-list>button[aria-pressed=true] { border-color:#8bcaff;background:#1b3047;box-shadow:inset 3px 0 #8bcaff; }
+.graph-activity-list time { flex-shrink:0;color:#9fb3cd; }
+.graph-activity-list span { flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis; }
+.graph-activity-list small { color:#a0b5ce;font-size:10px; }
+.graph-activity-list p { margin:8px;color:#a4b5c9; }
+.graph-activity-note { display:block;font-size:10px;color:#a4b5c9;margin-top:6px; }
+.graph-scope-groups { max-height:110px;overflow:auto;margin:5px 0;color:#a9cce8; }
+.graph-scope-groups ul { margin:4px 0;padding-left:16px;list-style:none; }
+.graph-scope-groups button { margin-bottom:3px;font-size:11px; }
+.graph-layer-controls { position:absolute;left:10px;top:10px;z-index:6;background:#111e2eed;color:#c9ddf4;border:1px solid #38516e;border-radius:7px;padding:8px;display:flex;gap:8px;flex-wrap:wrap;max-width:calc(100% - 40px);font:11px ui-sans-serif,system-ui; }
+.graph-layer-controls label { display:flex;gap:4px;align-items:center; }
+.graph-layer-controls button { color:#c9ddf4;background:#1b304a;border:1px solid #38516e;border-radius:4px;cursor:pointer;padding:3px 6px; }
+@keyframes ofp-route-travel { from { stroke-dashoffset:46;opacity:1 } to { stroke-dashoffset:0;opacity:0 } }
+.ofp-observed-route-flash { animation:ofp-route-travel 1.8s linear 1; }
+.ofp-reduced-motion *,.ofp-reduced-motion *::before,.ofp-reduced-motion *::after {animation:none!important;transition:none!important;scroll-behavior:auto!important}
+@media (max-width:900px) { .graph-activity-list small { display:none; } .graph-activity-list{max-height:78px}.graph-activity-note{display:none}.graph-activity-heading>span{display:none} }
+@media (prefers-reduced-motion: reduce) { .react-flow *,.react-flow *::before,.react-flow *::after { animation:none!important;transition:none!important; } }

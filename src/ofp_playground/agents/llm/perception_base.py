@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import abstractmethod
-from typing import Any, Optional
+from typing import Any
 
 from openfloor import Envelope
 
@@ -49,9 +49,9 @@ class BaseImagePerceptionAgent(BasePlaygroundAgent):
         self._model = model or self.DEFAULT_MODEL
         self._api_key = api_key
         self._has_floor = False
-        self._pending_image_path: Optional[str] = None
+        self._pending_image_path: str | None = None
 
-    def _extract_image_from_envelope(self, envelope: Envelope) -> Optional[str]:
+    def _extract_image_from_envelope(self, envelope: Envelope) -> str | None:
         for event in (envelope.events or []):
             de = getattr(event, "dialogEvent", None)
             if de and hasattr(de, "features") and de.features:
@@ -84,7 +84,7 @@ class BaseImagePerceptionAgent(BasePlaygroundAgent):
             return self._format_result(result)
         except Exception as e:
             short = str(e).split("\n")[0][:200]
-            logger.error("[%s] Inference error: %s", self._name, e)
+            logger.exception('[%s] Inference error: see traceback', self._name)
             return f"({self.TASK} failed: {short})"
 
     async def _handle_utterance(self, envelope: Envelope) -> None:
@@ -102,8 +102,8 @@ class BaseImagePerceptionAgent(BasePlaygroundAgent):
                 response = await self._run_inference(self._pending_image_path)
                 if response:
                     await self.send_envelope(self._make_utterance_envelope(response))
-        except Exception as e:
-            logger.error("[%s] Floor grant error: %s", self._name, e)
+        except Exception:
+            logger.exception('[%s] Floor grant error: see traceback', self._name)
         finally:
             self._has_floor = False
             self._pending_image_path = None
@@ -127,10 +127,10 @@ class BaseImagePerceptionAgent(BasePlaygroundAgent):
                 try:
                     envelope = await asyncio.wait_for(self._queue.get(), timeout=1.0)
                     await self._dispatch(envelope)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
-                except Exception as e:
-                    logger.error("[%s] error: %s", self._name, e, exc_info=True)
+                except Exception:
+                    logger.exception('[%s] error: see traceback', self._name)
         finally:
             self._running = False
 
@@ -149,6 +149,7 @@ class BaseTextPerceptionAgent(BasePlaygroundAgent):
         conversation_id: str,
         api_key: str,
         model: str = "",
+        *,
         analyze_every: int = 3,
     ):
         task_slug = self.TASK.lower().replace("-", "")
@@ -195,8 +196,8 @@ class BaseTextPerceptionAgent(BasePlaygroundAgent):
         try:
             result = await loop.run_in_executor(None, _protected_call, text)
             return self._format_result(result)
-        except Exception as e:
-            logger.error("[%s] Inference error: %s", self._name, e)
+        except Exception:
+            logger.exception('[%s] Inference error: see traceback', self._name)
             return ""
 
     async def _handle_utterance(self, envelope: Envelope) -> None:
@@ -220,8 +221,8 @@ class BaseTextPerceptionAgent(BasePlaygroundAgent):
                 response = await self._run_inference(context)
                 if response:
                     await self.send_envelope(self._make_utterance_envelope(response))
-        except Exception as e:
-            logger.error("[%s] Floor grant error: %s", self._name, e)
+        except Exception:
+            logger.exception('[%s] Floor grant error: see traceback', self._name)
         finally:
             self._has_floor = False
             await self.yield_floor()
@@ -244,9 +245,9 @@ class BaseTextPerceptionAgent(BasePlaygroundAgent):
                 try:
                     envelope = await asyncio.wait_for(self._queue.get(), timeout=1.0)
                     await self._dispatch(envelope)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
-                except Exception as e:
-                    logger.error("[%s] error: %s", self._name, e, exc_info=True)
+                except Exception:
+                    logger.exception('[%s] error: see traceback', self._name)
         finally:
             self._running = False

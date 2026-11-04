@@ -16,9 +16,12 @@ pointing outside) is rejected.
 """
 from __future__ import annotations
 
+import logging
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ofp_playground.config.settings import Settings
@@ -32,7 +35,7 @@ _CODING_POLICIES = [
 ]
 
 
-def build_coding_session_tool(settings: "Settings") -> list[dict]:
+def build_coding_session_tool(settings: Settings) -> list[dict]:
     """Return Anthropic-format tool definition for ``create_coding_session``.
 
     Intended to be appended to the orchestrator's tool list alongside
@@ -368,7 +371,9 @@ def _safe_resolve(sandbox_dir: Path, rel_path: str) -> Path:
     - ``..`` components that would escape the sandbox
     - symlinks whose target is outside the sandbox
     """
-    if os.path.isabs(rel_path):
+    # Reject rooted and drive-relative Windows paths on every host as well.
+    # Python 3.13's Windows isabs() excludes single-slash rooted paths.
+    if Path(rel_path).anchor or PureWindowsPath(rel_path).anchor:
         raise ValueError(f"Absolute paths are not allowed: {rel_path}")
 
     # Normalise and reject explicit parent traversal
@@ -380,7 +385,7 @@ def _safe_resolve(sandbox_dir: Path, rel_path: str) -> Path:
     sandbox_resolved = sandbox_dir.resolve()
 
     # Final containment check (catches tricky symlink chains)
-    if not str(resolved).startswith(str(sandbox_resolved)):
+    if not resolved.is_relative_to(sandbox_resolved):
         raise ValueError(f"Path escapes sandbox: {rel_path}")
 
     return resolved
@@ -467,6 +472,7 @@ def execute_coding_tool(
     except ValueError as e:
         return f"Error: {e}"
     except Exception as e:
+        logger.exception("Operation failed at an application error boundary")
         return f"Error: {type(e).__name__}: {e}"
 
 
@@ -511,11 +517,12 @@ def _tree(directory: Path, root: Path, lines: list[str], prefix: str, depth: int
 
 
 def _human_size(nbytes: int) -> str:
+    size = float(nbytes)
     for unit in ("B", "KB", "MB"):
-        if nbytes < 1024:
-            return f"{nbytes:.0f}{unit}" if unit == "B" else f"{nbytes:.1f}{unit}"
-        nbytes /= 1024
-    return f"{nbytes:.1f}GB"
+        if size < 1024:
+            return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}GB"
 
 
 def _exec_read_file(sandbox_dir: Path, rel_path: str) -> str:

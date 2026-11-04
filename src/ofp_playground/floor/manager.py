@@ -4,7 +4,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from typing import Optional
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from openfloor import (
     Capability,
@@ -25,12 +26,17 @@ from openfloor import (
     UtteranceEvent,
 )
 
-from ofp_playground.bus.message_bus import MessageBus, FLOOR_MANAGER_URI
+from ofp_playground.bus.message_bus import FLOOR_MANAGER_URI, MessageBus
 from ofp_playground.config.output import SessionOutputManager
 from ofp_playground.floor.history import ConversationHistory
 from ofp_playground.floor.policy import FloorController, FloorPolicy
-from ofp_playground.floor.sandbox_context import PHASES_DIRNAME, build_sandbox_context_note, sync_sandbox_context
-from ofp_playground.memory.artifact_store import ArtifactStore, _slugify as _artifact_slugify
+from ofp_playground.floor.sandbox_context import (
+    PHASES_DIRNAME,
+    build_sandbox_context_note,
+    sync_sandbox_context,
+)
+from ofp_playground.memory.artifact_store import ArtifactStore
+from ofp_playground.memory.artifact_store import _slugify as _artifact_slugify
 from ofp_playground.memory.store import MemoryStore
 from ofp_playground.models.artifact import Utterance
 from ofp_playground.renderer.terminal import TerminalRenderer
@@ -107,7 +113,7 @@ class FloorManager:
         self,
         bus: MessageBus,
         policy: FloorPolicy = FloorPolicy.SEQUENTIAL,
-        renderer: Optional[TerminalRenderer] = None,
+        renderer: TerminalRenderer | None = None,
     ):
         self._bus = bus
         self._manifest = make_floor_manager_manifest()
@@ -121,29 +127,34 @@ class FloorManager:
         self._renderer = renderer
         self._queue: asyncio.Queue = asyncio.Queue()
         self._agents: dict[str, str] = {}  # speakerUri -> conversationalName
+        self._departed_agents: set[str] = set()
+        self._draining_agents: set[str] = set()
+        self._concurrent_holders: set[str] = set()
+        self._remove_callback: Callable[[str], Awaitable[None]] | None = None
+        self._status_callback: Callable[[str, str], None] | None = None
         self._running = False
         self._stop_event = asyncio.Event()
         self._round_count = 0
         self._agents_spoken_this_round: set[str] = set()
-        self._director_uri: Optional[str] = None
-        self._showrunner_uri: Optional[str] = None
-        self._orchestrator_uri: Optional[str] = None
-        self._assigned_uri: Optional[str] = None  # currently assigned agent in showrunner_driven mode
+        self._director_uri: str | None = None
+        self._showrunner_uri: str | None = None
+        self._orchestrator_uri: str | None = None
+        self._assigned_uri: str | None = None  # currently assigned agent in showrunner_driven mode
         self._parallel_batch: set[str] = set()  # URIs assigned simultaneously via [ASSIGN_PARALLEL]
         self._last_orchestrator_directive_text: str = ""  # suppress duplicate replay while assignment is in flight
-        self._spawn_callback: Optional[callable] = None  # set externally after creation
+        self._spawn_callback: Callable[..., Any] | None = None  # set externally after creation
         self._orchestrator_idle_grants: int = 0  # consecutive floor grants with no productive action
         self._skip_next_orchestrator_yield: bool = False  # absorb stale yieldFloor after breakout re-grant
-        self._breakout_callback: Optional[callable] = None  # set externally for breakout sessions
-        self._coding_session_callback: Optional[callable] = None  # set externally for coding sessions
-        self._on_artifact_saved: Optional[callable] = None  # set by canvas bridge
+        self._breakout_callback: Callable[..., Any] | None = None  # set externally for breakout sessions
+        self._coding_session_callback: Callable[..., Any] | None = None  # set externally for coding sessions
+        self._on_artifact_saved: Callable[..., Any] | None = None  # set by canvas bridge
         self._pending_breakout_file = None  # Path to last breakout artifact — injected into next ASSIGN
         self._breakout_artifact_count: int = 0  # sequential counter for breakout-beat-N slugs
         self._manuscript: list[str] = []  # accumulated accepted chunks (showrunner_driven)
         self._last_worker_text: str = ""  # most recent non-orchestrator utterance text
         self._last_worker_name: str = ""  # speaker name for the above
         self._last_accepted_text: str = ""  # snapshot of just-[ACCEPT]ed text for truncation recovery
-        self._manifests: dict[str, "Manifest"] = {}  # speakerUri → Manifest
+        self._manifests: dict[str, Manifest] = {}  # speakerUri → Manifest
         self._memory_store: MemoryStore = MemoryStore()  # ephemeral session memory
         self._artifact_store: ArtifactStore = ArtifactStore(self._output.root)  # phase artifact files
 
@@ -176,8 +187,14 @@ class FloorManager:
         return dict(self._agents)
 
     @property
-    def floor_holder(self) -> Optional[str]:
+    def floor_holder(self) -> str | None:
         return self._policy.current_holder
+
+    @property
+    def floor_holders(self) -> tuple[str, ...]:
+        if self._policy.policy == FloorPolicy.FREE_FOR_ALL:
+            return tuple(sorted(self._concurrent_holders))
+        return (self.floor_holder,) if self.floor_holder else ()
 
     def _sync_sandbox_context(self) -> str:
         """Mirror phase and memory context into the shared sandbox and render guidance."""
@@ -206,6 +223,11 @@ class FloorManager:
 
     async def grant_to(self, speaker_uri: str) -> None:
         """Directly grant floor to a specific agent, bypassing the request queue."""
+        if speaker_uri in self._departed_agents or speaker_uri in self._draining_agents:
+            return
+        previous = self._policy.current_holder
+        if previous and previous != speaker_uri and self._policy.policy != FloorPolicy.FREE_FOR_ALL:
+            await self._revoke_floor(previous)
         self._policy.grant_to(speaker_uri)
         await self._grant_floor(speaker_uri)
 
@@ -241,21 +263,47 @@ class FloorManager:
     def register_agent(self, speaker_uri: str, name: str) -> None:
         """Register a local agent with the floor manager."""
         self._agents[speaker_uri] = name
+        self._departed_agents.discard(speaker_uri)
+        self._draining_agents.discard(speaker_uri)
         self._trace_collector.register_agent(speaker_uri, name)
         self._policy.add_to_rotation(speaker_uri)
         if self._renderer:
             self._renderer.add_agent(speaker_uri, name)
 
-    def unregister_agent(self, speaker_uri: str) -> None:
+    def unregister_agent(self, speaker_uri: str) -> str | None:
+        """Detach membership synchronously; caller sends any returned floor grant."""
+        self._report_floor(speaker_uri, "left")
         self._agents.pop(speaker_uri, None)
+        self._departed_agents.add(speaker_uri)
+        self._draining_agents.discard(speaker_uri)
+        self._concurrent_holders.discard(speaker_uri)
         self._manifests.pop(speaker_uri, None)
-        self._policy.remove_from_rotation(speaker_uri)
+        self._agents_spoken_this_round.discard(speaker_uri)
+        self._parallel_batch.discard(speaker_uri)
+        for attr in ("_assigned_uri", "_orchestrator_uri", "_director_uri", "_showrunner_uri"):
+            if getattr(self, attr, None) == speaker_uri:
+                setattr(self, attr, None)
+        return self._policy.remove_from_rotation(speaker_uri)
+
+    def drain_agent(self, speaker_uri: str) -> None:
+        """Exclude new grants and assignments; let an active turn yield normally."""
+        self._draining_agents.add(speaker_uri)
+        self._policy.suspend(speaker_uri)
+
+    async def remove_agent(self, speaker_uri: str) -> None:
+        if self._remove_callback is not None:
+            await self._remove_callback(speaker_uri)
+            return
+        next_holder = self.unregister_agent(speaker_uri)
+        await self._bus.unregister(speaker_uri)
+        if next_holder is not None:
+            await self._grant_floor(next_holder)
 
     def store_manifest(self, speaker_uri: str, manifest: Manifest) -> None:
         """Store a manifest published by an agent."""
         self._manifests[speaker_uri] = manifest
 
-    def find_agent_by_manifest(self, name: str, task_type: str) -> Optional[tuple[str, Manifest]]:
+    def find_agent_by_manifest(self, name: str, task_type: str) -> tuple[str, Manifest] | None:
         """Return (uri, manifest) of an existing agent that matches the spawn request.
 
         Matching rules (in order):
@@ -277,8 +325,8 @@ class FloorManager:
         }
         requested_outputs = _task_output.get(task_lower, [])
 
-        name_match: Optional[tuple[str, Manifest]] = None
-        capability_match: Optional[tuple[str, Manifest]] = None
+        name_match: tuple[str, Manifest] | None = None
+        capability_match: tuple[str, Manifest] | None = None
 
         for uri, manifest in self._manifests.items():
             ident = manifest.identification
@@ -290,11 +338,10 @@ class FloorManager:
             if requested_outputs:
                 for cap in (manifest.capabilities or []):
                     layers = cap.supportedLayers
-                    if layers and any(o in (layers.output or []) for o in requested_outputs):
-                        # Also require the task type keyphrase to be present
-                        if any(task_lower in kp.lower() for kp in (cap.keyphrases or [])):
-                            capability_match = (uri, manifest)
-                            break
+                    if (layers and any(o in (layers.output or []) for o in requested_outputs)
+                            and any(task_lower in kp.lower() for kp in (cap.keyphrases or []))):
+                        capability_match = (uri, manifest)
+                        break
 
         return name_match or capability_match
 
@@ -310,8 +357,16 @@ class FloorManager:
     async def _send(self, envelope: Envelope) -> None:
         await self._bus.send(envelope)
 
+    def _report_floor(self, speaker_uri: str, state: str) -> None:
+        if self._status_callback:
+            self._status_callback(speaker_uri, state)
+
     async def _grant_floor(self, speaker_uri: str) -> None:
         """Send grantFloor event to the specified agent."""
+        if speaker_uri in self._departed_agents or speaker_uri in self._draining_agents:
+            return
+        if self._policy.policy == FloorPolicy.FREE_FOR_ALL:
+            self._concurrent_holders.add(speaker_uri)
         from openfloor import To
         envelope = Envelope(
             sender=self._make_sender(),
@@ -324,12 +379,16 @@ class FloorManager:
             ],
         )
         await self._send(envelope)
+        self._report_floor(speaker_uri, "has-floor")
         if self._renderer and self._renderer.show_floor_events:
             agent_name = self._agents.get(speaker_uri, speaker_uri)
             self._renderer.show_system_event(f"Floor granted to {agent_name}")
 
     async def _revoke_floor(self, speaker_uri: str, reason: str = "@timedOut") -> None:
         """Revoke floor from the specified agent."""
+        if self._policy.current_holder != speaker_uri and speaker_uri not in self._concurrent_holders:
+            return
+        self._concurrent_holders.discard(speaker_uri)
         from openfloor import To
         envelope = Envelope(
             sender=self._make_sender(),
@@ -342,7 +401,9 @@ class FloorManager:
             ],
         )
         await self._send(envelope)
-        self._policy.revoke_floor()
+        if self._policy.current_holder == speaker_uri:
+            self._policy.revoke_floor()
+        self._report_floor(speaker_uri, "floor-revoked")
 
     def _handle_publish_manifests(self, sender_uri: str, event) -> None:
         """Store manifests published by agents joining the conversation."""
@@ -355,8 +416,8 @@ class FloorManager:
                 name = manifest.identification.conversationalName or sender_uri
                 caps = [kp for cap in (manifest.capabilities or []) for kp in (cap.keyphrases or [])]
                 logger.debug("Manifest stored for %s: capabilities=%s", name, caps)
-            except Exception as e:
-                logger.warning("Failed to parse manifest from %s: %s", sender_uri, e)
+            except Exception:
+                logger.warning('Failed to parse manifest from %s: see traceback', sender_uri, exc_info=True)
 
     async def _maybe_return_floor_to_orchestrator(self) -> None:
         """Return floor to orchestrator only when no parallel batch agents are still pending.
@@ -368,7 +429,8 @@ class FloorManager:
         if self._parallel_batch:
             return  # more agents still pending — hold the floor
         if self._orchestrator_uri:
-            await self.grant_to(self._orchestrator_uri)
+            if self._orchestrator_uri is not None:
+                await self.grant_to(self._orchestrator_uri)
             if self._renderer:
                 self._renderer.show_system_event(
                     f"Floor returned to {self._agents.get(self._orchestrator_uri, 'Orchestrator')}"
@@ -505,7 +567,7 @@ class FloorManager:
                 media_key=media_key, media_path=media_path,
             )
 
-    def _resolve_agent_uri_by_name(self, name: str) -> Optional[str]:
+    def _resolve_agent_uri_by_name(self, name: str) -> str | None:
         """Look up a speakerUri by conversational name.
 
         Matching is case-insensitive and treats underscores as spaces so that
@@ -526,10 +588,10 @@ class FloorManager:
         available = [n for u, n in self._agents.items() if "floor-manager" not in u]
         word_count = sum(len(c.split()) for c in self._manuscript)
         parts = [
-            f"[SYSTEM] You yielded without issuing an assignment. "
+            (f"[SYSTEM] You yielded without issuing an assignment. "
             f"Manuscript progress: {len(self._manuscript)} accepted entries ({word_count} words). "
             f"Available agents: {available}. "
-            f"Issue your next [ASSIGN AgentName]: task directive, or [TASK_COMPLETE] if done.",
+            f"Issue your next [ASSIGN AgentName]: task directive, or [TASK_COMPLETE] if done."),
         ]
 
         # Escalate: inject memory summary on 3rd+ idle grant
@@ -550,8 +612,10 @@ class FloorManager:
 
         return "\n".join(parts)
 
-    async def _send_directed_utterance(self, text: str, target_uri: Optional[str] = None) -> None:
+    async def _send_directed_utterance(self, text: str, target_uri: str | None = None) -> None:
         """Send a directive utterance, privately if target_uri given (OFP private message)."""
+        if target_uri in self._draining_agents or target_uri in self._departed_agents:
+            return
         de = DialogEvent(
             speakerUri=self.speaker_uri,
             id=str(uuid.uuid4()),
@@ -688,11 +752,13 @@ class FloorManager:
         text = re.sub(r'numerusform\{[^}]*\}', '', text)
 
         assigned_in_batch = False  # guard: only one [ASSIGN] per directive batch
-        breakout_header: Optional[dict] = None  # parsed from [BREAKOUT ...]
+        breakout_header: dict | None = None  # parsed from [BREAKOUT ...]
         breakout_agent_specs: list[str] = []    # raw specs from [BREAKOUT_AGENT ...]
-        coding_session_header: Optional[dict] = None  # parsed from [CODING_SESSION ...]
+        coding_session_header: dict | None = None  # parsed from [CODING_SESSION ...]
         coding_agent_specs: list[str] = []             # raw specs from [CODING_AGENT ...]
-        coding_context_refs = {"artifact_refs": [], "context_files": [], "todo_items": []}
+        coding_context_refs: dict[str, list[str]] = {
+            "artifact_refs": [], "context_files": [], "todo_items": []
+        }
 
         # Collapse multi-line [BREAKOUT ...] and [BREAKOUT_AGENT ...] blocks into
         # single lines so the line-by-line parser below can handle them.
@@ -968,7 +1034,7 @@ class FloorManager:
                     self._last_worker_text = ""
                 if self._renderer:
                     word_count = sum(len(chunk.split()) for chunk in self._manuscript)
-                    label = f"prose" if add_to_manuscript else accept_type or "plan"
+                    label = "prose" if add_to_manuscript else accept_type or "plan"
                     self._renderer.show_system_event(
                         f"[Orchestrator] Accepted ({label}) — manuscript: {word_count} words"
                     )
@@ -1007,7 +1073,7 @@ class FloorManager:
                 if target_uri:
                     # OFP: send UninviteEvent before removing from the floor
                     await self.send_uninvite(target_uri, reason="@brokenPolicy")
-                    self.unregister_agent(target_uri)
+                    await self.remove_agent(target_uri)
                     await self._bus.unregister(target_uri)
                     if self._renderer:
                         self._renderer.show_system_event(
@@ -1029,7 +1095,7 @@ class FloorManager:
                                 f"[Orchestrator] Spawned: {spec_str[:60]}"
                             )
                     except Exception as e:
-                        logger.error("Orchestrator [SPAWN] failed for '%s': %s", spec_str, e)
+                        logger.exception("Orchestrator [SPAWN] failed for '%s': see traceback", spec_str)
                         if self._renderer:
                             self._renderer.show_system_event(f"[Orchestrator] Spawn failed: {e}")
                         if self._orchestrator_uri:
@@ -1102,7 +1168,7 @@ class FloorManager:
         words = set(_re.findall(r"[a-z0-9]+", topic.lower()))
         return words - _STOP
 
-    def _find_duplicate_breakout(self, topic: str) -> Optional[str]:
+    def _find_duplicate_breakout(self, topic: str) -> str | None:
         """Return the key of an existing breakout whose topic overlaps significantly."""
         from ofp_playground.memory.store import MemoryCategory
         new_kw = self._breakout_topic_keywords(topic)
@@ -1141,7 +1207,8 @@ class FloorManager:
             )
             await self._send_directed_utterance(feedback, target_uri=self._orchestrator_uri)
             self._skip_next_orchestrator_yield = True
-            await self.grant_to(self._orchestrator_uri)
+            if self._orchestrator_uri is not None:
+                await self.grant_to(self._orchestrator_uri)
             if self._renderer:
                 self._renderer.show_system_event(
                     f"[Orchestrator] Breakout skipped — duplicate of '{existing[:60]}'"
@@ -1168,7 +1235,7 @@ class FloorManager:
         try:
             callback_result = await self._breakout_callback(topic, policy, max_rounds, agent_specs)
         except Exception as e:
-            logger.error("Orchestrator [BREAKOUT] failed: %s", e, exc_info=True)
+            logger.exception('Orchestrator [BREAKOUT] failed: see traceback')
             callback_result = f"[Breakout: {topic}] — failed: {e}"
             if self._renderer:
                 self._renderer.show_system_event(f"[Orchestrator] Breakout failed: {e}")
@@ -1199,8 +1266,8 @@ class FloorManager:
                         "kind": "phase",
                         "preview": transcript_content[:120],
                     })
-            except Exception as e:
-                logger.warning("Could not save breakout transcript to ArtifactStore: %s", e)
+            except Exception:
+                logger.warning('Could not save breakout transcript to ArtifactStore: see traceback', exc_info=True)
         else:
             compact_text = callback_result
 
@@ -1226,7 +1293,8 @@ class FloorManager:
         # The orchestrator's yieldFloor (sent before this breakout ran) is still
         # in the queue. Mark it stale so _handle_yield_floor doesn't re-grant.
         self._skip_next_orchestrator_yield = True
-        await self.grant_to(self._orchestrator_uri)
+        if self._orchestrator_uri is not None:
+            await self.grant_to(self._orchestrator_uri)
 
         if self._renderer:
             self._renderer.show_system_event(
@@ -1313,7 +1381,7 @@ class FloorManager:
                 initial_todo_items,
             )
         except Exception as e:
-            logger.error("Orchestrator [CODING_SESSION] failed: %s", e, exc_info=True)
+            logger.exception('Orchestrator [CODING_SESSION] failed: see traceback')
             callback_result = f"[Coding session: {topic[:60]}] — failed: {e}"
             if self._renderer:
                 self._renderer.show_system_event(f"[Orchestrator] Coding session failed: {e}")
@@ -1341,7 +1409,8 @@ class FloorManager:
             target_uri=self._orchestrator_uri,
         )
         self._skip_next_orchestrator_yield = True
-        await self.grant_to(self._orchestrator_uri)
+        if self._orchestrator_uri is not None:
+            await self.grant_to(self._orchestrator_uri)
 
         if self._renderer:
             self._renderer.show_system_event(
@@ -1367,9 +1436,9 @@ class FloorManager:
         import json
 
         text = "\n\n".join(self._manuscript)
-        filepath = str(self._output.root / "manuscript.txt")
+        filepath: str | None = str(self._output.root / "manuscript.txt")
         try:
-            with open(filepath, "w", encoding="utf-8") as f:
+            with (self._output.root / "manuscript.txt").open("w", encoding="utf-8") as f:
                 f.write(text)
         except OSError as e:
             logger.warning("Could not save manuscript: %s", e)
@@ -1401,8 +1470,8 @@ class FloorManager:
             logger.info("Trace timeline saved to %s", filepath)
             if self._renderer:
                 self._renderer.show_system_event(f"Trace timeline saved: {filepath}")
-        except Exception as e:
-            logger.warning("Could not save trace timeline: %s", e)
+        except Exception:
+            logger.warning('Could not save trace timeline: see traceback', exc_info=True)
 
     def _has_llm_agent(self, agent_uris: set[str]) -> bool:
         """Return True if any of the given agent URIs belongs to a local LLM agent."""
@@ -1426,12 +1495,11 @@ class FloorManager:
             return
 
         director_text = (
-            f"[DIRECTOR — Round {self._round_count} complete]\n"
+            f"[FLOOR — Round {self._round_count} complete]\n"
             f"What just happened:\n" + "\n".join(recap_parts) + "\n\n"
-            "IMPORTANT FOR ALL AGENTS: Build on what was said above. "
-            "Do NOT contradict or ignore other agents' contributions. "
-            "Do NOT invent new characters or plot threads that conflict with what was just established. "
-            "React to and extend the existing narrative."
+            "Use the preceding contributions as context for the current task. "
+            "Distinguish evidence from assumptions, challenge unsupported claims, "
+            "and identify useful next steps. Follow your assigned role."
         )
 
         de = DialogEvent(
@@ -1448,20 +1516,21 @@ class FloorManager:
 
         if self._renderer:
             self._renderer.show_system_event(
-                f"[Director] Round {self._round_count} summary injected"
+                f"[Floor] Round {self._round_count} summary injected"
             )
 
     async def _handle_request_floor(self, envelope: Envelope, event: RequestFloorEvent) -> None:
         sender_uri = envelope.sender.speakerUri if envelope.sender else "unknown"
+        if sender_uri in self._draining_agents or sender_uri in self._departed_agents:
+            return
 
         # In showrunner_driven mode only the assigned agent (or any member of an
         # active parallel batch) may request floor — all others are silently dropped.
-        if self._orchestrator_uri:
-            if (
-                sender_uri not in (self._orchestrator_uri, self._assigned_uri)
-                and sender_uri not in self._parallel_batch
-            ):
-                return
+        if self._orchestrator_uri and (
+            sender_uri not in (self._orchestrator_uri, self._assigned_uri)
+            and sender_uri not in self._parallel_batch
+        ):
+            return
 
         # If the agent already holds the floor (e.g. got it via round-robin just before
         # its queued request arrived), skip — avoids double-grant loops.
@@ -1470,6 +1539,7 @@ class FloorManager:
 
         reason = getattr(event, "reason", "") or ""
         granted = self._policy.request_floor(sender_uri, reason)
+        self._report_floor(sender_uri, "requesting-floor")
 
         if granted:
             await self._grant_floor(sender_uri)
@@ -1492,7 +1562,16 @@ class FloorManager:
             self._skip_next_orchestrator_yield = False
             return
 
+        if self._policy.policy == FloorPolicy.FREE_FOR_ALL and sender_uri in self._concurrent_holders:
+            self._concurrent_holders.discard(sender_uri)
+            if self._policy.current_holder == sender_uri:
+                self._policy.yield_floor(sender_uri)
+            self._report_floor(sender_uri, "yielded")
+            return
+        if self._policy.current_holder != sender_uri:
+            return
         next_holder = self._policy.yield_floor(sender_uri)
+        self._report_floor(sender_uri, "yielded")
         if next_holder:
             await self._grant_floor(next_holder)
         elif (
@@ -1537,6 +1616,8 @@ class FloorManager:
     async def process_envelope(self, envelope: Envelope) -> None:
         """Process an incoming envelope from the bus."""
         sender_uri = envelope.sender.speakerUri if envelope.sender else "unknown"
+        if sender_uri in self._departed_agents:
+            return
 
         for event in (envelope.events or []):
             event_type = event.eventType if hasattr(event, "eventType") else str(type(event).__name__)
@@ -1557,13 +1638,11 @@ class FloorManager:
             elif event_type == "declineInvite":
                 agent_name = self._agents.get(sender_uri, sender_uri.split(":")[-1])
                 logger.warning("Agent %s declined invite", agent_name)
-                self.unregister_agent(sender_uri)
-                await self._bus.unregister(sender_uri)
+                await self.remove_agent(sender_uri)
             elif event_type == "bye":
-                self.unregister_agent(sender_uri)
-                await self._bus.unregister(sender_uri)
+                agent_name = self._agents.get(sender_uri, sender_uri)
+                await self.remove_agent(sender_uri)
                 if self._renderer:
-                    agent_name = self._agents.get(sender_uri, sender_uri)
                     self._renderer.show_system_event(f"{agent_name} left the conversation")
             else:
                 logger.debug("Floor manager ignoring event type: %s", event_type)
@@ -1583,11 +1662,11 @@ class FloorManager:
                 try:
                     envelope = await asyncio.wait_for(self._queue.get(), timeout=1.0)
                     await self.process_envelope(envelope)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     if self._stop_event.is_set():
                         break
-                except Exception as e:
-                    logger.error("Floor manager error: %s", e, exc_info=True)
+                except Exception:
+                    logger.exception('Floor manager error: see traceback')
         finally:
             self._running = False
             self._output_trace_timeline()

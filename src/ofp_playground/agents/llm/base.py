@@ -4,25 +4,24 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import Optional
 
 from openfloor import Capability, Envelope, Identification, Manifest, SupportedLayers
 
 from ofp_playground.agents.base import BasePlaygroundAgent
-from ofp_playground.bus.message_bus import MessageBus, FLOOR_MANAGER_URI
+from ofp_playground.bus.message_bus import FLOOR_MANAGER_URI, MessageBus
 
 logger = logging.getLogger(__name__)
 
 LLM_URI_TEMPLATE = "tag:ofp-playground.local,2025:llm-{name}"
 
-SYSTEM_PROMPT_TEMPLATE = """You are {name}, an AI agent participating in a collaborative story.
+SYSTEM_PROMPT_TEMPLATE = """You are {name}, an AI agent participating in a shared working session.
 
 Your role: {synopsis}
 
 RULES:
-- Write ONLY your creative content. No preamble, no meta-commentary.
+- Follow your role and the current task. Distinguish evidence, assumptions, and uncertainty.
 - Do NOT start your response with [{name}]:, [Director]:, or any name in brackets.
-- Do NOT repeat instructions or reference who gave them.
+- Give useful results and explain reasoning when the task calls for it.
 - Keep responses concise. Build on what others said.
 
 Current participants: {participants}"""
@@ -47,9 +46,9 @@ class BaseLLMAgent(BasePlaygroundAgent):
         synopsis: str,
         bus: MessageBus,
         conversation_id: str,
-        model: Optional[str] = None,
+        model: str | None = None,
         relevance_filter: bool = True,
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
     ):
         speaker_uri = LLM_URI_TEMPLATE.format(name=name.lower().replace(" ", "-"))
         super().__init__(
@@ -100,6 +99,8 @@ class BaseLLMAgent(BasePlaygroundAgent):
 
         return Manifest(
             identification=Identification(
+                organization="OFP Playground",
+                synopsis=f"Local agent: {self._name}",
                 speakerUri=self._speaker_uri,
                 serviceUrl=self._service_url,
                 conversationalName=self._name,
@@ -178,7 +179,7 @@ class BaseLLMAgent(BasePlaygroundAgent):
         self._current_director_instruction = ""
         return False
 
-    async def _generate_response(self, participants: list[str]) -> Optional[str]:
+    async def _generate_response(self, participants: list[str]) -> str | None:
         """Generate a response using the LLM. Override in subclasses."""
         raise NotImplementedError
 
@@ -195,8 +196,8 @@ class BaseLLMAgent(BasePlaygroundAgent):
             )
             response = await self._quick_check(prompt)
             return response.strip().upper().startswith("YES")
-        except Exception as e:
-            logger.warning("Relevance check failed: %s", e)
+        except Exception:
+            logger.warning('Relevance check failed: see traceback', exc_info=True)
             return True  # Default to speaking if check fails
 
     async def _quick_check(self, prompt: str) -> str:
@@ -242,12 +243,10 @@ class BaseLLMAgent(BasePlaygroundAgent):
         # Detect ShowRunner-format message ([DIRECTIVE for Name]: lines) and handle specially
         if "[DIRECTIVE for" in text:
             assigned = self._parse_showrunner_message(text)
-            if assigned and not self._has_floor and self._consecutive_errors < 3:
-                # Orchestrator directives arrive as private messages FROM the floor manager
-                # and always come paired with an explicit grantFloor — no need to request.
-                # ShowRunner directives come from a peer agent; those need request_floor().
-                if sender_uri != FLOOR_MANAGER_URI:
-                    await self.request_floor("responding to ShowRunner directive")
+            # Floor-manager directives have an explicit grant; peer directives request one.
+            if (assigned and not self._has_floor and self._consecutive_errors < 3
+                    and sender_uri != FLOOR_MANAGER_URI):
+                await self.request_floor("responding to ShowRunner directive")
             # Either way, don't fall through to generic floor-request logic
             return
 
@@ -271,10 +270,13 @@ class BaseLLMAgent(BasePlaygroundAgent):
 
     async def _handle_grant_floor(self) -> None:
         """Floor was granted — generate and send a response."""
+        if self._draining:
+            await self.yield_floor()
+            return
         self._has_floor = True
         try:
             # Get participants from conversation history
-            participants = []  # Could be populated from registry
+            participants: list[str] = []  # Could be populated from registry
 
             response_text = await self._call_with_retry(lambda: self._generate_response(participants))
             if response_text:
@@ -282,7 +284,7 @@ class BaseLLMAgent(BasePlaygroundAgent):
                 envelope = self._make_utterance_envelope(response_text)
                 await self.send_envelope(envelope)
                 self._consecutive_errors = 0
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._consecutive_errors += 1
             logger.warning("[%s] response timed out (errors: %d)", self._name, self._consecutive_errors)
         except Exception as e:
@@ -290,14 +292,13 @@ class BaseLLMAgent(BasePlaygroundAgent):
             err_str = str(e)
             if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower() or "rate" in err_str.lower():
                 short = err_str.split("\n")[0][:120]
-                logger.warning("[%s] quota/rate-limit (attempt %d): %s",
-                               self._name, self._consecutive_errors, short)
+                logger.warning('[%s] quota/rate-limit (attempt %d): %s', self._name, self._consecutive_errors, short, exc_info=True)
             elif "400" in err_str or "Bad request" in err_str or "model_not_supported" in err_str or "not supported" in err_str.lower():
                 short = err_str.split("\n")[0][:120]
                 logger.error("[%s] model error (giving up): %s", self._name, short)
                 self._consecutive_errors = 99  # permanently retire this agent
             else:
-                logger.error("[%s] LLM error: %s", self._name, e, exc_info=True)
+                logger.exception('[%s] LLM error: see traceback', self._name)
         finally:
             self._has_floor = False
             self._current_director_instruction = ""  # consumed — clear for next round
@@ -314,10 +315,10 @@ class BaseLLMAgent(BasePlaygroundAgent):
                 try:
                     envelope = await asyncio.wait_for(self._queue.get(), timeout=1.0)
                     await self._dispatch(envelope)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
-                except Exception as e:
-                    logger.error("LLM agent error: %s", e, exc_info=True)
+                except Exception:
+                    logger.exception('LLM agent error: see traceback')
         finally:
             self._running = False
 

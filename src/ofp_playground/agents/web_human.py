@@ -37,7 +37,7 @@ class WebHumanAgent(BasePlaygroundAgent):
             conversation_id=conversation_id,
         )
         # UI → agent (user text input)
-        self.input_queue: asyncio.Queue[str] = asyncio.Queue()
+        self.input_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=128)
         # agent → UI (incoming envelopes for display)
         self.output_queue: asyncio.Queue[Envelope] = asyncio.Queue()
 
@@ -56,22 +56,34 @@ class WebHumanAgent(BasePlaygroundAgent):
                 try:
                     envelope = await asyncio.wait_for(self._queue.get(), timeout=1.0)
                     await self.output_queue.put(envelope)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
-                except Exception as e:
-                    logger.error("[%s] bus read error: %s", self._name, e)
+                except Exception:
+                    logger.exception('[%s] bus read error: see traceback', self._name)
 
         async def _read_input():
             """Forward UI input into the OFP bus."""
+            task_id: str | None = None
             while self._running:
                 try:
+                    if self._status and task_id is None:
+                        task_id = self._status.begin_work("awaiting-input")
+                        self._status.transition("task", "input-required", task_id=task_id, reason="input-needed")
+                        self._status.transition("lifecycle", "idle")
                     text = await asyncio.wait_for(self.input_queue.get(), timeout=1.0)
                     if text.strip():
                         await self.send_text(text.strip())
-                except asyncio.TimeoutError:
+                        if self._status and task_id:
+                            self._status.finish_work(task_id, "completed", "work-completed")
+                            task_id = None
+                except TimeoutError:
                     continue
-                except Exception as e:
-                    logger.error("[%s] input read error: %s", self._name, e)
+                except asyncio.CancelledError:
+                    if self._status and task_id:
+                        self._status.finish_work(task_id, "canceled", "canceled")
+                    raise
+                except Exception:
+                    logger.exception('[%s] input read error: see traceback', self._name)
 
         try:
             await asyncio.gather(_read_bus(), _read_input())

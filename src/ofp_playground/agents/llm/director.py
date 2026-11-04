@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Optional, Callable
+from collections.abc import Callable
 
 from openfloor import Envelope
 
@@ -55,7 +55,7 @@ class DirectorAgent(HuggingFaceAgent):
         conversation_id: str,
         api_key: str,
         model: str,
-        stop_callback: Optional[Callable] = None,
+        stop_callback: Callable | None = None,
     ) -> None:
         super().__init__(
             name=name,
@@ -140,11 +140,11 @@ class DirectorAgent(HuggingFaceAgent):
                 await self.send_envelope(self._make_utterance_envelope(response))
                 self._consecutive_errors = 0
                 # If the LLM included the completion marker on the final part, stop
-                if "[STORY COMPLETE]" in response and self._current_part >= self._total_parts:
-                    if self._stop_callback:
-                        self._stop_callback()
-        except Exception as e:
-            logger.error("[%s] director error: %s", self._name, e, exc_info=True)
+                if ("[STORY COMPLETE]" in response and self._current_part >= self._total_parts
+                        and self._stop_callback):
+                    self._stop_callback()
+        except Exception:
+            logger.exception('[%s] director error: see traceback', self._name)
         finally:
             self._has_floor = False
             await self.yield_floor()

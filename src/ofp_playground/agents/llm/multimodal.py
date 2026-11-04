@@ -5,7 +5,7 @@ import asyncio
 import base64
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
 from openfloor import Envelope
 
@@ -36,7 +36,7 @@ class MultimodalAgent(BasePlaygroundAgent):
         conversation_id: str,
         api_key: str,
         model: str = DEFAULT_MODEL,
-        provider: Optional[str] = None,
+        provider: str | None = None,
     ):
         speaker_uri = MULTIMODAL_URI_TEMPLATE.format(name=name.lower().replace(" ", "-"))
         super().__init__(
@@ -51,10 +51,10 @@ class MultimodalAgent(BasePlaygroundAgent):
         self._api_key = api_key
         self._provider = provider
         self._has_floor = False
-        self._pending_image_path: Optional[str] = None
-        self._pending_text: Optional[str] = None
+        self._pending_image_path: str | None = None
+        self._pending_text: str | None = None
 
-    def _extract_image_from_envelope(self, envelope: Envelope) -> Optional[str]:
+    def _extract_image_from_envelope(self, envelope: Envelope) -> str | None:
         """Return the image file path from the envelope's 'image' feature, if present."""
         for event in (envelope.events or []):
             de = getattr(event, "dialogEvent", None)
@@ -92,7 +92,7 @@ class MultimodalAgent(BasePlaygroundAgent):
                 + "Analyze this image and provide a relevant, concise response."
             )
 
-            kwargs = {"token": self._api_key}
+            kwargs: dict[str, Any] = {"token": self._api_key}
             if self._provider:
                 kwargs["provider"] = self._provider
             client = InferenceClient(**kwargs)
@@ -116,7 +116,7 @@ class MultimodalAgent(BasePlaygroundAgent):
             return await loop.run_in_executor(None, _call)
         except Exception as e:
             short = str(e).split("\n")[0][:200]
-            logger.error("[%s] Vision analysis error: %s", self._name, e)
+            logger.exception('[%s] Vision analysis error: see traceback', self._name)
             return f"(Vision analysis failed: {short})"
 
     async def _handle_utterance(self, envelope: Envelope) -> None:
@@ -142,8 +142,8 @@ class MultimodalAgent(BasePlaygroundAgent):
                     self._pending_text or "",
                 )
                 await self.send_envelope(self._make_utterance_envelope(response))
-        except Exception as e:
-            logger.error("[%s] Floor grant error: %s", self._name, e)
+        except Exception:
+            logger.exception('[%s] Floor grant error: see traceback', self._name)
         finally:
             self._has_floor = False
             self._pending_image_path = None
@@ -169,9 +169,9 @@ class MultimodalAgent(BasePlaygroundAgent):
                 try:
                     envelope = await asyncio.wait_for(self._queue.get(), timeout=1.0)
                     await self._dispatch(envelope)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
-                except Exception as e:
-                    logger.error("[%s] error: %s", self._name, e, exc_info=True)
+                except Exception:
+                    logger.exception('[%s] error: see traceback', self._name)
         finally:
             self._running = False

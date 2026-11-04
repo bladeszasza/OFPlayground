@@ -16,7 +16,6 @@ import textwrap
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +50,7 @@ def _generate_summary(content: str, max_chars: int = 120) -> str:
     for line in lines:
         stripped = line.strip()
         # Skip empty, headers, and horizontal rules
-        if not stripped or stripped.startswith("#") or stripped.startswith("---"):
+        if not stripped or stripped.startswith(("#", "---")):
             continue
         # Skip table header separators
         if re.match(r"^\|[-\s|:]+\|$", stripped):
@@ -102,7 +101,7 @@ class ArtifactStore:
         content: str,
         summary: str = "",
         slug: str = "",
-        depends_on: Optional[list[str]] = None,
+        depends_on: list[str] | None = None,
     ) -> PhaseArtifact:
         """Save a phase artifact to disk and return the artifact metadata.
 
@@ -205,7 +204,7 @@ class ArtifactStore:
         lines.append("Use read_artifact(slug) to retrieve the full content of any phase.")
         return "\n".join(lines)
 
-    def read(self, query: str) -> Optional[str]:
+    def read(self, query: str) -> str | None:
         """Retrieve full content of an artifact by slug, phase number, or substring match.
 
         Args:
@@ -217,11 +216,11 @@ class ArtifactStore:
         art = self._resolve(query)
         return art.content if art else None
 
-    def resolve(self, query: str) -> Optional[PhaseArtifact]:
+    def resolve(self, query: str) -> PhaseArtifact | None:
         """Return the artifact metadata for *query* if it can be resolved."""
         return self._resolve(query)
 
-    def read_with_header(self, query: str) -> Optional[str]:
+    def read_with_header(self, query: str) -> str | None:
         """Retrieve full artifact including the markdown frontmatter."""
         art = self._resolve(query)
         if art is None:
@@ -231,7 +230,7 @@ class ArtifactStore:
         except OSError:
             return art.content
 
-    def latest(self) -> Optional[PhaseArtifact]:
+    def latest(self) -> PhaseArtifact | None:
         """Return the most recently saved artifact, or None."""
         return self._artifacts[-1] if self._artifacts else None
 
@@ -245,7 +244,7 @@ class ArtifactStore:
 
     # ── Internal ─────────────────────────────────────────────────────────
 
-    def _resolve(self, query: str) -> Optional[PhaseArtifact]:
+    def _resolve(self, query: str) -> PhaseArtifact | None:
         """Find an artifact by exact slug, phase number, or substring.
 
         For slug and substring matches the *latest* saved artifact wins so that
@@ -267,7 +266,7 @@ class ArtifactStore:
         q_clean = re.sub(r"^\d+_", "", q.replace(".md", ""))
 
         # Exact slug match — keep iterating to find the LAST (most recent) match.
-        result: Optional[PhaseArtifact] = None
+        result: PhaseArtifact | None = None
         for art in self._artifacts:
             if art.slug == q_clean:
                 result = art

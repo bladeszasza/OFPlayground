@@ -1,3 +1,4 @@
+import { apiFetch } from '../api'
 // canvas/frontend/src/hooks/useSession.ts
 import { useEffect, useRef, useCallback, useState } from 'react'
 import type { WSEvent } from '../types'
@@ -12,6 +13,7 @@ export function useSession({ sessionId, onEvent }: UseSessionOptions) {
   const onEventRef = useRef(onEvent)
   const [connected, setConnected] = useState(false)
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastCursor = useRef(0)
 
   // Keep onEvent ref fresh so the WS handler always calls the latest version
   useEffect(() => {
@@ -25,7 +27,7 @@ export function useSession({ sessionId, onEvent }: UseSessionOptions) {
     }
 
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const ws = new WebSocket(`${protocol}//${location.host}/ws/${id}`)
+    const ws = new WebSocket(`${protocol}//${location.host}/ws/${id}?after=${lastCursor.current}`)
     wsRef.current = ws
 
     ws.onopen = () => setConnected(true)
@@ -33,6 +35,12 @@ export function useSession({ sessionId, onEvent }: UseSessionOptions) {
     ws.onmessage = (evt) => {
       try {
         const data = JSON.parse(evt.data) as WSEvent
+        if (data.type === 'replay_gap') {
+          lastCursor.current = 0
+        } else if (data.cursor !== undefined) {
+          if (data.cursor <= lastCursor.current) return
+          lastCursor.current = data.cursor
+        }
         onEventRef.current(data)
       } catch {
         // ignore malformed frames
@@ -53,6 +61,7 @@ export function useSession({ sessionId, onEvent }: UseSessionOptions) {
   }, [sessionId])
 
   useEffect(() => {
+    lastCursor.current = 0
     if (sessionId) {
       connect(sessionId)
     }
@@ -68,15 +77,17 @@ export function useSession({ sessionId, onEvent }: UseSessionOptions) {
   }, [sessionId, connect])
 
   const sendMessage = useCallback(async (text: string) => {
-    await fetch('/session/message', {
+    const response = await apiFetch('/session/message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text }),
     })
+    if (!response.ok) throw new Error((await response.json()).detail ?? 'Message rejected')
   }, [])
 
   const kickAgent = useCallback(async (name: string) => {
-    await fetch(`/session/agent/${encodeURIComponent(name)}`, { method: 'DELETE' })
+    const response = await apiFetch(`/session/agent/${encodeURIComponent(name)}`, { method: 'DELETE' })
+    if (!response.ok) throw new Error((await response.json()).detail ?? 'Removal rejected')
   }, [])
 
   return { connected, sendMessage, kickAgent }

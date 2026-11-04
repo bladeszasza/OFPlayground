@@ -10,8 +10,8 @@ Tool definitions follow the same model-agnostic pattern as spawn_tools.py:
 """
 from __future__ import annotations
 
-import uuid
 import re
+import uuid
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -105,7 +105,7 @@ def build_memory_tools() -> list[dict]:
 def execute_memory_tool(
     tool_name: str,
     args: dict,
-    memory_store: "MemoryStore",
+    memory_store: MemoryStore,
     author: str = "agent",
 ) -> str:
     """Execute a memory tool call and return a plain-text result.
@@ -149,7 +149,7 @@ def execute_memory_tool(
     return f"Unknown memory tool: {tool_name!r}"
 
 
-def parse_remember_directives(text: str, memory_store: "MemoryStore", author: str) -> str:
+def parse_remember_directives(text: str, memory_store: MemoryStore, author: str) -> str:
     """Parse and execute [REMEMBER category]: content directives from agent text output.
 
     This provides a text-directive fallback so worker agents without tool-calling

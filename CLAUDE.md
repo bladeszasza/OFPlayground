@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Install for development
-pip install -e ".[dev]"
+uv sync --locked --extra dev --extra canvas --extra web
 
 # Run all tests
 pytest
@@ -22,7 +22,7 @@ ruff check src/
 
 # Type check
 mypy src/
-# Note: mypy 1.x does not yet support Python 3.14 — the cli.py syntax error is pre-existing noise
+# Function bodies are checked; the untyped external SDK exception is scoped to openfloor.*.
 
 # Run the CLI
 ofp-playground start --help

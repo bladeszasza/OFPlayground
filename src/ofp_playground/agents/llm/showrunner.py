@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Callable, Optional
+from collections.abc import Callable
+from typing import ClassVar
 
 from openfloor import Envelope
 
-from ofp_playground.agents.llm.base import _uri_to_name
 from ofp_playground.agents.llm.anthropic import AnthropicAgent
+from ofp_playground.agents.llm.base import BaseLLMAgent, _uri_to_name
 from ofp_playground.agents.llm.google import GoogleAgent
 from ofp_playground.agents.llm.huggingface import HuggingFaceAgent
 from ofp_playground.agents.llm.openai import OpenAIAgent
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 ORCHESTRATOR_MAX_OUTPUT_TOKENS = 4096
 
 
-def _parse_json_tool_arguments(tool_name: str, raw_arguments: object) -> Optional[dict]:
+def _parse_json_tool_arguments(tool_name: str, raw_arguments: object) -> dict | None:
     """Parse JSON-encoded tool arguments without crashing on truncation.
 
     Some provider SDKs return tool arguments as JSON strings. If the payload is
@@ -103,7 +104,7 @@ class ShowRunnerAgent(HuggingFaceAgent):
         conversation_id: str,
         api_key: str,
         model: str,
-        stop_callback: Optional[callable] = None,
+        stop_callback: Callable[[], None] | None = None,
         total_parts: int = 6,
     ) -> None:
         super().__init__(
@@ -180,11 +181,11 @@ class ShowRunnerAgent(HuggingFaceAgent):
                 self._append_to_context(self._name, response, is_self=True)
                 await self.send_envelope(self._make_utterance_envelope(response))
                 self._consecutive_errors = 0
-                if "[STORY COMPLETE]" in response and self._current_part >= self._total_parts:
-                    if self._stop_callback:
-                        self._stop_callback()
-        except Exception as e:
-            logger.error("[%s] showrunner error: %s", self._name, e, exc_info=True)
+                if ("[STORY COMPLETE]" in response and self._current_part >= self._total_parts
+                        and self._stop_callback):
+                    self._stop_callback()
+        except Exception:
+            logger.exception('[%s] showrunner error: see traceback', self._name)
         finally:
             self._has_floor = False
             await self.yield_floor()
@@ -305,7 +306,7 @@ RULES:
 {memory_section}"""
 
 
-class _OrchestratorBase:
+class _OrchestratorBase(BaseLLMAgent):
     """Mixin providing shared orchestration logic for all provider orchestrators.
 
     Must be listed BEFORE the provider base class in the MRO so its methods
@@ -314,7 +315,9 @@ class _OrchestratorBase:
         class MyOrchestrator(_OrchestratorBase, MyProviderAgent): ...
     """
 
-    _URI_TYPE_LABELS = {
+    _mission: str
+    _stop_callback: Callable[[], None] | None
+    _URI_TYPE_LABELS: ClassVar[dict[str, str]] = {
         "image-": "image generation",
         "video-": "video generation",
         "audio-": "audio generation",
@@ -329,7 +332,7 @@ class _OrchestratorBase:
         """Attach the shared session MemoryStore (set by FloorManager on agent registration)."""
         self._memory_store = store
 
-    def _resolve_name_in_registry(self, name: str) -> Optional[str]:
+    def _resolve_name_in_registry(self, name: str) -> str | None:
         """Return the speakerUri if *name* (or its underscore variant) is already on the floor.
 
         Comparison is case-insensitive with underscores treated as spaces so that
@@ -405,7 +408,7 @@ class _OrchestratorBase:
             memory_section=memory_section,
         ) + artifact_section
 
-    async def _handle_utterance(self, envelope: "Envelope") -> None:
+    async def _handle_utterance(self, envelope: Envelope) -> None:
         """Record worker output into context. Never request floor — FloorManager grants it reactively."""
         sender_uri = self._get_sender_uri(envelope)
         if sender_uri == self.speaker_uri:
@@ -486,11 +489,11 @@ class _OrchestratorBase:
                 await self.send_envelope(self._make_utterance_envelope(response))
                 self._consecutive_errors = 0
                 import re as _re
-                if _re.search(r"^\[TASK_COMPLETE\]", response, _re.MULTILINE | _re.IGNORECASE):
-                    if self._stop_callback:
-                        self._stop_callback()
-        except Exception as e:
-            logger.error("[%s] orchestrator error: %s", self._name, e, exc_info=True)
+                if (_re.search(r"^\[TASK_COMPLETE\]", response, _re.MULTILINE | _re.IGNORECASE)
+                        and self._stop_callback):
+                    self._stop_callback()
+        except Exception:
+            logger.exception('[%s] orchestrator error: see traceback', self._name)
         finally:
             self._has_floor = False
             await self.yield_floor()
@@ -511,7 +514,7 @@ class OrchestratorAgent(_OrchestratorBase, HuggingFaceAgent):
         conversation_id: str,
         api_key: str,
         model: str,
-        stop_callback: Optional[Callable] = None,
+        stop_callback: Callable | None = None,
         settings=None,
     ) -> None:
         super().__init__(
@@ -528,13 +531,19 @@ class OrchestratorAgent(_OrchestratorBase, HuggingFaceAgent):
         self._manifest_registry: dict = {}
         self._settings = settings
 
-    async def _generate_response(self, participants: list[str]) -> Optional[str]:
+    async def _generate_response(self, participants: list[str]) -> str | None:
         import asyncio
         loop = asyncio.get_event_loop()
         from ofp_playground.agents.llm.spawn_tools import build_spawn_tools, to_hf_tools
+        from ofp_playground.floor.breakout_tools import (
+            build_breakout_tools,
+            tool_use_to_breakout_directive,
+        )
+        from ofp_playground.floor.coding_session_tools import (
+            build_coding_session_tool,
+            tool_use_to_coding_session_directive,
+        )
         from ofp_playground.memory.tools import build_memory_tools, execute_memory_tool
-        from ofp_playground.floor.breakout_tools import build_breakout_tools, tool_use_to_breakout_directive
-        from ofp_playground.floor.coding_session_tools import build_coding_session_tool, tool_use_to_coding_session_directive
 
         system = self._build_system_prompt([])
         messages = [{"role": "system", "content": system}] + list(self._conversation_history)
@@ -655,7 +664,7 @@ class AnthropicOrchestratorAgent(_OrchestratorBase, AnthropicAgent):
         conversation_id: str,
         api_key: str,
         model: str,
-        stop_callback: Optional[Callable] = None,
+        stop_callback: Callable | None = None,
         settings=None,
     ) -> None:
         super().__init__(
@@ -672,14 +681,20 @@ class AnthropicOrchestratorAgent(_OrchestratorBase, AnthropicAgent):
         self._manifest_registry: dict = {}
         self._settings = settings
 
-    async def _generate_response(self, participants: list[str]) -> Optional[str]:
+    async def _generate_response(self, participants: list[str]) -> str | None:
         import asyncio
         loop = asyncio.get_event_loop()
         from ofp_playground.agents.llm.spawn_tools import build_spawn_tools
-        from ofp_playground.memory.tools import build_memory_tools, execute_memory_tool
+        from ofp_playground.floor.breakout_tools import (
+            build_breakout_tools,
+            tool_use_to_breakout_directive,
+        )
+        from ofp_playground.floor.coding_session_tools import (
+            build_coding_session_tool,
+            tool_use_to_coding_session_directive,
+        )
         from ofp_playground.memory.artifact_tools import build_artifact_tools, execute_artifact_tool
-        from ofp_playground.floor.breakout_tools import build_breakout_tools, tool_use_to_breakout_directive
-        from ofp_playground.floor.coding_session_tools import build_coding_session_tool, tool_use_to_coding_session_directive
+        from ofp_playground.memory.tools import build_memory_tools, execute_memory_tool
 
         client = self._get_client()
         system = self._build_system_prompt([])
@@ -793,7 +808,7 @@ class OpenAIOrchestratorAgent(_OrchestratorBase, OpenAIAgent):
         conversation_id: str,
         api_key: str,
         model: str,
-        stop_callback: Optional[Callable] = None,
+        stop_callback: Callable | None = None,
         settings=None,
     ) -> None:
         super().__init__(
@@ -810,14 +825,20 @@ class OpenAIOrchestratorAgent(_OrchestratorBase, OpenAIAgent):
         self._manifest_registry: dict = {}
         self._settings = settings
 
-    async def _generate_response(self, participants: list[str]) -> Optional[str]:
+    async def _generate_response(self, participants: list[str]) -> str | None:
         import asyncio
         loop = asyncio.get_event_loop()
         from ofp_playground.agents.llm.spawn_tools import build_spawn_tools, to_openai_tools
-        from ofp_playground.memory.tools import build_memory_tools, execute_memory_tool
+        from ofp_playground.floor.breakout_tools import (
+            build_breakout_tools,
+            tool_use_to_breakout_directive,
+        )
+        from ofp_playground.floor.coding_session_tools import (
+            build_coding_session_tool,
+            tool_use_to_coding_session_directive,
+        )
         from ofp_playground.memory.artifact_tools import build_artifact_tools, execute_artifact_tool
-        from ofp_playground.floor.breakout_tools import build_breakout_tools, tool_use_to_breakout_directive
-        from ofp_playground.floor.coding_session_tools import build_coding_session_tool, tool_use_to_coding_session_directive
+        from ofp_playground.memory.tools import build_memory_tools, execute_memory_tool
 
         client = self._get_client()
         system = self._build_system_prompt([])
@@ -927,7 +948,7 @@ class GoogleOrchestratorAgent(_OrchestratorBase, GoogleAgent):
         conversation_id: str,
         api_key: str,
         model: str,
-        stop_callback: Optional[Callable] = None,
+        stop_callback: Callable | None = None,
         settings=None,
     ) -> None:
         super().__init__(
@@ -944,16 +965,23 @@ class GoogleOrchestratorAgent(_OrchestratorBase, GoogleAgent):
         self._manifest_registry: dict = {}
         self._settings = settings
 
-    async def _generate_response(self, participants: list[str]) -> Optional[str]:
+    async def _generate_response(self, participants: list[str]) -> str | None:
         import asyncio
         loop = asyncio.get_event_loop()
         from google import genai
         from google.genai import types
+
         from ofp_playground.agents.llm.spawn_tools import build_spawn_tools, to_google_tools
-        from ofp_playground.memory.tools import build_memory_tools, execute_memory_tool
+        from ofp_playground.floor.breakout_tools import (
+            build_breakout_tools,
+            tool_use_to_breakout_directive,
+        )
+        from ofp_playground.floor.coding_session_tools import (
+            build_coding_session_tool,
+            tool_use_to_coding_session_directive,
+        )
         from ofp_playground.memory.artifact_tools import build_artifact_tools, execute_artifact_tool
-        from ofp_playground.floor.breakout_tools import build_breakout_tools, tool_use_to_breakout_directive
-        from ofp_playground.floor.coding_session_tools import build_coding_session_tool, tool_use_to_coding_session_directive
+        from ofp_playground.memory.tools import build_memory_tools, execute_memory_tool
 
         system = self._build_system_prompt([])
         history = list(self._conversation_history)

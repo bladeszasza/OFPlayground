@@ -6,7 +6,6 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from openfloor import Capability, Envelope, Identification, Manifest, SupportedLayers
 
@@ -49,15 +48,17 @@ class ImageAgent(BasePlaygroundAgent):
         self._model = model
         self._api_key = api_key
         self._has_floor = False
-        self._last_text: Optional[str] = None
-        self._raw_prompt: Optional[str] = None  # pre-built prompt from ShowRunner [IMAGE]: directive
-        self._last_directive_text: Optional[str] = None  # full DIRECTIVE text incl. STORY SO FAR
+        self._last_text: str | None = None
+        self._raw_prompt: str | None = None  # pre-built prompt from ShowRunner [IMAGE]: directive
+        self._last_directive_text: str | None = None  # full DIRECTIVE text incl. STORY SO FAR
         self._output_dir: Path = OUTPUT_DIR
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
     def _build_manifest(self) -> Manifest:
         return Manifest(
             identification=Identification(
+                organization="OFP Playground",
+                synopsis=f"Local agent: {self._name}",
                 speakerUri=self._speaker_uri,
                 serviceUrl=self._service_url,
                 conversationalName=self._name,
@@ -101,7 +102,7 @@ class ImageAgent(BasePlaygroundAgent):
             scene = " ".join(words[:40])
         return f"{self._style}, {scene}"
 
-    async def _generate_image(self, prompt: str) -> Optional[Path]:
+    async def _generate_image(self, prompt: str) -> Path | None:
         loop = asyncio.get_event_loop()
 
         def _call():
@@ -118,8 +119,8 @@ class ImageAgent(BasePlaygroundAgent):
             path = self._output_dir / f"{ts}_{self._name.lower()}.png"
             image.save(str(path))
             return path
-        except Exception as e:
-            logger.error("[%s] Image generation error: %s", self._name, e)
+        except Exception:
+            logger.exception('[%s] Image generation error: see traceback', self._name)
             return None
 
     async def _handle_utterance(self, envelope: Envelope) -> None:
@@ -182,8 +183,8 @@ class ImageAgent(BasePlaygroundAgent):
                             text_desc, "image", mime, str(path.resolve())
                         )
                     )
-        except Exception as e:
-            logger.error("[%s] Floor grant error: %s", self._name, e)
+        except Exception:
+            logger.exception('[%s] Floor grant error: see traceback', self._name)
         finally:
             self._has_floor = False
             self._last_text = None
@@ -202,6 +203,7 @@ class ImageAgent(BasePlaygroundAgent):
                 self._has_floor = False
             elif event_type == "invite":
                 from openfloor import Event, To
+
                 from ofp_playground.bus.message_bus import FLOOR_MANAGER_URI
                 accept_envelope = Envelope(
                     sender=self._make_sender(),
@@ -227,9 +229,9 @@ class ImageAgent(BasePlaygroundAgent):
                 try:
                     envelope = await asyncio.wait_for(self._queue.get(), timeout=1.0)
                     await self._dispatch(envelope)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
-                except Exception as e:
-                    logger.error("[%s] error: %s", self._name, e, exc_info=True)
+                except Exception:
+                    logger.exception('[%s] error: see traceback', self._name)
         finally:
             self._running = False

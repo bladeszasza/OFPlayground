@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from openai import OpenAI
 
 from ofp_playground.agents.llm.base import BaseLLMAgent
 from ofp_playground.bus.message_bus import MessageBus
@@ -34,7 +37,7 @@ class OpenAIAgent(BaseLLMAgent):
             relevance_filter=relevance_filter,
             api_key=api_key,
         )
-        self._client = None
+        self._client: OpenAI | None = None
 
     def _get_client(self):
         if self._client is None:
@@ -57,7 +60,7 @@ class OpenAIAgent(BaseLLMAgent):
 
         return await loop.run_in_executor(None, _call)
 
-    async def _generate_response(self, participants: list[str]) -> Optional[str]:
+    async def _generate_response(self, participants: list[str]) -> str | None:
         import asyncio
         loop = asyncio.get_event_loop()
         client = self._get_client()

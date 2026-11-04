@@ -1,7 +1,7 @@
 """Trace event model used by the conversation timeline renderer."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(slots=True)
@@ -30,3 +30,5 @@ class TraceEvent:
     directive: str | None
     media_type: str | None
     envelope_json: str
+    # Queue acceptance is transport evidence, not proof of agent processing.
+    delivery_outcomes: dict[str, str] = field(default_factory=dict)
