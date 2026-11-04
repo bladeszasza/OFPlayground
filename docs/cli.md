@@ -16,7 +16,7 @@ ofp-playground start [OPTIONS]
 | `--agent` | Agent spec (repeatable) | — |
 | `--remote` | Remote agent slug or URL (repeatable) | — |
 | `--topic` | Seed topic / mission for the conversation | — |
-| `--max-turns` | Stop after N utterances | — |
+| `--max-turns` | Stop after N agent utterances (counted by the floor manager; any N) | — |
 | `--no-human` | Run without human participant | `False` |
 | `--human-name` | Display name for human | `User` |
 | `--show-floor-events` | Show floor control events in terminal | `False` |
@@ -24,27 +24,28 @@ ofp-playground start [OPTIONS]
 
 ### `ofp-playground web`
 
-Launch Gradio web UI for the conversation.
-
-```bash
-ofp-playground web [OPTIONS]
-```
-
-Same options as `start`, plus:
+Launch the Gradio web UI for the conversation. Accepts the same session options as `start`: `--policy`, `--agent`, `--remote`, `--topic`, `--max-turns`, `--no-human`, `--human-name`, `--show-floor-events` and `-v`. It also takes:
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--host` | Server host | `0.0.0.0` |
+| `--host` | Server host (loopback only in this local profile) | `127.0.0.1` |
 | `--port` | Server port | `7860` |
-| `--share` | Create public Gradio share link | `False` |
+| `--share` | Rejected: public sharing needs an authenticated deployment profile | `False` |
 
-### `ofp-playground agents`
+Floor and orchestrator events (assignments, round boundaries, auto-accepts, the final manuscript) appear in the web chat. Floor commands typed into the chat box (`/grant`, `/pass`, `/floor`, `/agents`) behave as in the terminal.
 
-List all available agent types and their CLI specs.
+### `ofp-playground canvas`
 
-```bash
-ofp-playground agents
-```
+Launch the visual canvas (FastAPI + React, `pip install -e ".[canvas]"`). `--policy`, `--agent`, `--remote`, `--topic`, `--max-turns`, `--no-human`, `--human-name` and `--show-floor-events` pre-populate the graph. Agent `-timeout` / `-max-retries` / `-max-tokens` flags are carried as node fields. Press Run to start. `--host` must be a loopback address; `--port` defaults to `8765`; `--open/--no-open` controls the browser.
+
+### `ofp-playground agents` / `personas` / `models` / `status`
+
+| Command | Purpose |
+|---------|---------|
+| `agents` | Provider / task help for agent specs |
+| `personas [SEARCH] [--preview] [--json]` | Search the `@category/slug` persona library; `--preview` shows the resolved prompt |
+| `models [--json]` | Configured provider model choices (never prints keys) |
+| `status [--watch] [--json] [--agent NAME]` | Read authenticated ASP status observations (see [ASP](asp.md)) |
 
 ### `ofp-playground validate`
 
@@ -122,7 +123,7 @@ type:subtype:name[:description[:model]]
 | `text-to-image` | Image generation | OpenAI, Google, HF |
 | `image-to-text` | Vision / OCR | Anthropic, OpenAI, Google, HF |
 | `text-to-video` | Video generation | HF |
-| `text-to-music` | Music generation | Google |
+| `text-to-music` | Music generation (Lyria) | Google (HF is rejected with an error) |
 | `image-text-to-text` | Multimodal VLM | HF |
 | `image-classification` | Image classification | HF |
 | `object-detection` | Object detection | HF |
@@ -132,7 +133,7 @@ type:subtype:name[:description[:model]]
 | `summarization` | Text summarization | HF |
 | `orchestrator` | Orchestrator (SHOWRUNNER_DRIVEN) | All |
 | `showrunner` | ShowRunner (ROUND_ROBIN) | HF |
-| `code-generation` | General-purpose coding agent | OpenAI (full), others stub |
+| `code-generation` | Coding agent with native code execution | Anthropic, OpenAI, Google (HF unsupported) |
 
 ---
 
@@ -166,22 +167,31 @@ type:subtype:name[:description[:model]]
 
 ## Slash Commands (In-Conversation)
 
-Available during interactive sessions:
+Available to the terminal human in `start`:
 
 | Command | Description |
 |---------|-------------|
 | `/help` | Show command reference |
-| `/agents` | List active agents with URIs |
-| `/floor` | Show current floor holder and policy |
+| `/agents` | List participants (🎤 marks floor holders) |
+| `/floor` | Show the floor holder(s) and the waiting queue |
+| `/grant <name>` | Give an agent the floor (MODERATED chair; an override in any policy) |
+| `/pass` | Give up a turn you hold without speaking |
 | `/history [n]` | Show last n utterances (default: 10) |
-| `/spawn <spec>` | Dynamically spawn an agent (same spec format as `--agent`) |
-| `/kick <name>` | Remove an agent from the conversation |
+| `/spawn <type> <name> [description] [model]` | Quick spawn; arguments are whitespace-split, so use `/add` for multi-word prompts. `/spawn remote <slug-or-url>` connects a remote |
+| `/add <agent spec>` | Spawn from a full `--agent` spec (colon or flag format, incl. `-timeout` etc.) |
+| `/connect <slug-or-url>` | Connect a remote OFP agent |
+| `/kick <name>` / `/remove <name> [graceful\|force]` | Remove an agent |
+| `/status [json]`, `/watch [s]`, `/quarantine`, `/review`, `/clear`, `/personas`, `/models` | ASP status and governance (see [ASP](asp.md)) |
 | `/quit` | Exit the session |
+
+`/grant`, `/pass`, `/floor` and `/agents` are shared floor commands (`SessionService.floor_command`). They work the same when typed into the web chat box or the canvas human input. See [Interfaces](interfaces.md) for the full CLI / web / canvas mapping.
 
 **Examples**:
 ```
-/spawn anthropic:Editor:You edit text for clarity.
-/spawn -provider openai -name Reviewer -system "You review code."
+/add -provider openai -name Reviewer -timeout 60 -system You review code.
+/spawn anthropic Editor
+/connect polly
+/grant Reviewer
 /kick Editor
 /history 20
 ```
@@ -192,10 +202,10 @@ Available during interactive sessions:
 
 | Value | Description |
 |-------|-------------|
-| `sequential` | FIFO turn queue |
-| `round_robin` | Strict rotation |
-| `moderated` | Manual floor grants |
-| `free_for_all` | Everyone speaks freely |
+| `sequential` | First-come, first-served FIFO turns |
+| `round_robin` | Strict ring; director opens / show runner closes each round |
+| `moderated` | Human chair calls on agents by name or `/grant` (FIFO without a human) |
+| `free_for_all` | Everyone speaks immediately (relevance-filtered) |
 | `showrunner_driven` | Orchestrator-controlled pipeline |
 
 See [Floor Policies](floor-policies.md) for detailed behavior.

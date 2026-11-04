@@ -226,3 +226,19 @@ def test_media_path_rejects_cross_platform_escapes(path):
 def test_media_path_accepts_descendant(tmp_path, monkeypatch):
     monkeypatch.setattr("canvas.backend.main.RESULT_DIR", tmp_path)
     assert _safe_media_path("session\\images\\one.png") == tmp_path / "session/images/one.png"
+
+
+async def test_floor_grant_requires_active_session(app) -> None:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/session/floor/grant/Alice")
+        assert response.status_code == 409
+
+
+async def test_agent_tuning_fields_accepted_in_start(app) -> None:
+    """Canvas agents accept the CLI's -timeout / -max-retries / -max-tokens tuning."""
+    from canvas.backend.main import NodeData
+
+    data = NodeData(provider="anthropic", name="A", timeout=30, maxRetries=1, maxTokens=900)
+    assert (data.timeout, data.maxRetries, data.maxTokens) == (30, 1, 900)
+    with pytest.raises(ValueError):
+        NodeData(timeout=0)

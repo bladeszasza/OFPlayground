@@ -162,8 +162,8 @@ def _parse_agent_spec(spec: str) -> tuple[str, str, str, str | None, int | None,
 
     # Colon-separated format.
     # Supports both:
-    #   type:name[:description[:model]]              e.g. openai:Artbot:painter
-    #   type:subtype:name[:description[:model]]      e.g. openai:text-to-image:Artbot:painter
+    #   provider:name[:description[:model]]              e.g. openai:Artbot:painter
+    #   provider:subtype:name[:description[:model]]      e.g. openai:text-to-image:Artbot:painter
     TASK_SUBTYPES = {
         "text-to-image", "image-to-text", "text-to-video", "text-generation", "text-to-music",
         "image-text-to-text", "image-classification", "object-detection",
@@ -201,7 +201,7 @@ def _parse_agent_spec(spec: str) -> tuple[str, str, str, str | None, int | None,
 
     demo_mode = head[0].lower() == "demo" and head[1].lower() in {"normal", "rate-limit", "input-wait", "silent", "stalled"}
     if len(head) >= 3 and (head[1].lower() in TASK_SUBTYPES or demo_mode):
-        # type:subtype:name[:rest]
+        # provider:subtype:name[:rest]
         agent_type = f"{head[0]}:{head[1]}".lower()
         name = head[2]
         rest = head[3] if len(head) > 3 else ""
@@ -211,7 +211,7 @@ def _parse_agent_spec(spec: str) -> tuple[str, str, str, str | None, int | None,
             description = f"I am {name}, an AI assistant."
             model_override = None
     else:
-        # type:name[:rest]
+        # provider:name[:rest]
         agent_type = head[0].lower()
         name = head[1]
         rest = ":".join(head[2:]) if len(head) > 2 else ""
@@ -231,8 +231,15 @@ def _build_canvas_config(
     no_human: bool,
     max_turns: int | None,
     human_name: str,
+    remotes: tuple[str, ...] = (),
+    show_floor_events: bool = False,
 ) -> dict:
-    """Build a StartRequest-shaped dict from CLI flags for canvas pre-population."""
+    """Build a StartRequest-shaped dict from CLI flags for canvas pre-population.
+
+    Carries every `start` option the canvas understands: policy, topic, turn
+    limit, human, floor-event visibility, agents (with model / timeout /
+    retries / max tokens) and remote agents.
+    """
     nodes: list[dict] = []
     edges: list[dict] = []
     floor_id = "floor-main"
@@ -247,14 +254,16 @@ def _build_canvas_config(
             "maxTurns": max_turns,
             "noHuman": no_human,
             "humanName": human_name,
-            "showFloorEvents": False,
+            "showFloorEvents": show_floor_events,
         },
     })
     nodes.append({"id": conv_id, "type": "ConversationNode", "data": {}})
     edges.append({"source": floor_id, "target": conv_id})
 
     for spec in agents:
-        agent_type, name, description, model_override, _mt, _to, _mr = _parse_agent_spec(spec)
+        agent_type, name, description, model_override, max_tokens, timeout, retries = (
+            _parse_agent_spec(spec)
+        )
         parts = agent_type.split(":", 1)
         provider = parts[0]
         subtype = parts[1] if len(parts) > 1 else ""
@@ -269,6 +278,27 @@ def _build_canvas_config(
                 "systemPrompt": description,
                 "slug": "",
                 "agentType": subtype,
+                "timeout": timeout,
+                "maxRetries": retries,
+                "maxTokens": max_tokens,
+            },
+        })
+        edges.append({"source": floor_id, "target": agent_id})
+
+    for target in remotes:
+        display_name, _url = _resolve_remote(target)
+        agent_id = f"remote-{display_name}"
+        nodes.append({
+            "id": agent_id,
+            "type": "AgentNode",
+            "data": {
+                "provider": "remote",
+                "name": display_name,
+                "model": "",
+                "systemPrompt": "",
+                "slug": "",
+                "agentType": "",
+                "remoteTarget": target,
             },
         })
         edges.append({"source": floor_id, "target": agent_id})
@@ -361,32 +391,10 @@ async def _connect_remote_agent(
 
 
 async def _seed_topic(topic: str, floor: FloorManager, bus: MessageBus) -> None:
-    """Inject a topic message from the floor manager to kick off the conversation."""
-    import uuid
+    """Inject a topic message from the floor manager (see ``session.seed_topic``)."""
+    from ofp_playground.session import seed_topic
 
-    from openfloor import (
-        Conversation,
-        DialogEvent,
-        Envelope,
-        Sender,
-        TextFeature,
-        Token,
-        UtteranceEvent,
-    )
-
-    from ofp_playground.bus.message_bus import FLOOR_MANAGER_URI
-
-    de = DialogEvent(
-        speakerUri=FLOOR_MANAGER_URI,
-        id=str(uuid.uuid4()),
-        features={"text": TextFeature(tokens=[Token(value=topic)])},
-    )
-    envelope = Envelope(
-        sender=Sender(speakerUri=FLOOR_MANAGER_URI, serviceUrl="local://floor-manager"),
-        conversation=Conversation(id=floor.conversation_id),
-        events=[UtteranceEvent(dialogEvent=de)],
-    )
-    await bus.send(envelope)
+    await seed_topic(topic, floor, bus)
 
 
 async def _run_session(
@@ -514,13 +522,29 @@ async def _run_session(
                 )
 
         async def handle_floor(_args: str):
-            holder = floor.floor_holder
-            holder_name = floor.active_agents.get(holder, holder) if holder else "Nobody"
-            renderer.show_system_event(f"Current floor holder: {holder_name}")
-            queue = floor._policy.queue
-            if queue:
-                waiting = [floor.active_agents.get(uri, uri) for uri, _ in queue]
-                renderer.show_system_event(f"Waiting: {', '.join(waiting)}")
+            renderer.show_system_event(await session.floor_command("/floor") or "")
+
+        async def handle_grant(args: str):
+            # Moderator control (MODERATED chair, or an override in any policy).
+            renderer.show_system_event(
+                await session.floor_command(f"/grant {args}", human.speaker_uri) or ""
+            )
+
+        async def handle_pass(_args: str):
+            renderer.show_system_event(
+                await session.floor_command("/pass", human.speaker_uri) or ""
+            )
+
+        async def handle_connect(args: str):
+            target = args.strip().split()[0] if args.strip() else ""
+            if not target:
+                renderer.show_system_event("Usage: /connect <slug-or-url>  (e.g. /connect polly)")
+                return
+            try:
+                await _connect_remote_agent(target, floor, bus, registry, renderer)
+            except Exception as e:
+                logger.exception("Operation failed at an application error boundary")
+                renderer.show_system_event(f"Failed to connect remote agent: {e}")
 
         async def handle_spawn(args: str):
             parts = args.split(maxsplit=3)
@@ -568,6 +592,9 @@ async def _run_session(
         human.register_command("help", handle_help)
         human.register_command("history", handle_history)
         human.register_command("floor", handle_floor)
+        human.register_command("grant", handle_grant)
+        human.register_command("pass", handle_pass)
+        human.register_command("connect", handle_connect)
         human.register_command("spawn", handle_spawn)
         human.register_command("add", handle_add)
         human.register_command("kick", handle_kick)
@@ -604,44 +631,13 @@ async def _run_session(
 
     # All participant run tasks are owned by the registry and joined at shutdown.
 
-    # Seed topic + optional turn watchdog
-    if topic or max_turns or no_human:
-        async def _orchestrate():
-            await asyncio.sleep(1.0)
-            if topic:
-                renderer.show_system_event(f'Topic: "{topic}"')
-                # Seed the session memory store with the original mission/goal
-                floor._memory_store.seed_goal(topic)
-                await _seed_topic(topic, floor, bus)
-                # If human holds the floor in sequential mode, yield it so agents
-                # can respond to the seeded topic; human re-queues for next turn.
-                if not no_human and floor.floor_holder == human.speaker_uri:
-                    human._has_floor = False
-                    await human.yield_floor()
-                    await human.request_floor()
-                # SHOWRUNNER_DRIVEN: orchestrator speaks first
-                if floor._orchestrator_uri:
-                    await asyncio.sleep(0.2)
-                    await floor.grant_to(floor._orchestrator_uri)
-                # Director gets the floor first — but only when ShowRunner is not present
-                # (ShowRunner speaks last, so Director directs before story agents respond)
-                elif floor._director_uri and not floor._showrunner_uri:
-                    await asyncio.sleep(0.2)  # let topic envelope reach all agent queues
-                    await floor.grant_to(floor._director_uri)
-            if no_human and not topic:
-                first_uri = floor._orchestrator_uri or floor._director_uri or next(iter(floor.active_agents), None)
-                if first_uri:
-                    await floor.grant_to(first_uri)
-            if max_turns:
-                # Poll history and stop when turn count is reached
-                while floor.history.__len__() < max_turns:
-                    await asyncio.sleep(2.0)
-                renderer.show_system_event(
-                    f"Reached {max_turns} turns — stopping conversation."
-                )
-                floor.stop()
-
-        tasks.append(_orchestrate())
+    # Same start-up and turn limit as the web UI and canvas (session.kickoff).
+    floor.max_turns = max_turns
+    from ofp_playground.session import kickoff
+    tasks.append(kickoff(
+        floor, bus, topic=topic, human=None if no_human else human,
+        notify=renderer.show_system_event, seed=_seed_topic,
+    ))
 
     try:
         await session.run(*tasks)
@@ -1141,6 +1137,13 @@ async def _spawn_llm_agent(
                 "Use anthropic:code-generation, openai:code-generation, or google:code-generation."
             )
             raise ValueError(f"Unsupported agent type/task: {agent_type}")
+        elif task == "text-to-music":
+            # There is no HF music agent; this used to fall through to a *text*
+            # agent that silently "answered" music assignments with prose.
+            raise ValueError(
+                "HuggingFace text-to-music is not supported. "
+                "Use google:text-to-music (Lyria) for music generation."
+            )
         else:
             # Default: text-generation (and any other text-in/text-out tasks)
             from ofp_playground.agents.llm.huggingface import HuggingFaceAgent
@@ -1219,6 +1222,8 @@ async def _spawn_llm_agent(
         # Give all agents access to the shared phase artifact store
         if hasattr(agent, "set_artifact_store"):
             agent.set_artifact_store(floor._artifact_store)
+        # Policy-specific behaviour (e.g. the FREE_FOR_ALL relevance filter)
+        agent.set_floor_policy(floor.policy)
         floor.register_agent(agent.speaker_uri, agent.name)
         registry.register(agent)
         model_name = model_override or getattr(agent, "_model", "default")
@@ -1654,9 +1659,13 @@ def start(ctx: click.Context, policy: str, agents: tuple, remotes: tuple,
 
 @main.command()
 @click.option("--policy", "-p", default="sequential",
-              help="Floor policy: sequential, round_robin, moderated, free_for_all")
+              help="Floor policy: sequential, round_robin, moderated, free_for_all, showrunner_driven")
 @click.option("--agent", "-a", "agents", multiple=True, metavar="TYPE:NAME[:DESCRIPTION]",
               help="Pre-spawn an agent (e.g. anthropic:Claude:You are helpful)")
+@click.option("--remote", "-r", "remotes", multiple=True, metavar="URL_OR_NAME",
+              help="Connect to a remote OFP agent by URL or known slug (e.g. polly, arxiv, wikipedia)")
+@click.option("--show-floor-events", is_flag=True, default=False,
+              help="Show floor grant/request system events in the chat (hidden by default)")
 @click.option("--topic", "-t", default=None,
               help="Seed topic to start the conversation automatically")
 @click.option("--no-human", is_flag=True, default=False,
@@ -1672,8 +1681,8 @@ def start(ctx: click.Context, policy: str, agents: tuple, remotes: tuple,
 @click.option("--verbose", "-v", is_flag=True, default=False,
               help="Enable debug logging")
 @click.pass_context
-def web(ctx: click.Context, policy: str, agents: tuple, topic: str | None,
-        no_human: bool, max_turns: int | None, human_name: str,
+def web(ctx: click.Context, policy: str, agents: tuple, remotes: tuple, show_floor_events: bool,
+        topic: str | None, no_human: bool, max_turns: int | None, human_name: str,
         host: str, port: int, share: bool, verbose: bool):
     """Start the OFP Playground Gradio web UI.
 
@@ -1691,6 +1700,7 @@ def web(ctx: click.Context, policy: str, agents: tuple, topic: str | None,
             floor_policy, agents, settings, verbose,
             topic=topic, no_human=no_human, max_turns=max_turns,
             human_name=human_name, host=host, port=port, share=share,
+            remote_urls=remotes, show_floor_events=show_floor_events,
         ))
     except KeyboardInterrupt:
         console.print("\n[dim]Web session interrupted.[/dim]")
@@ -1705,6 +1715,10 @@ def web(ctx: click.Context, policy: str, agents: tuple, topic: str | None,
 @click.option("--open/--no-open", "open_browser", default=True, show_default=True)
 @click.option("--policy", "-p", default=None, help="Floor policy (SEQUENTIAL, ROUND_ROBIN, FREE_FOR_ALL, MODERATED, SHOWRUNNER_DRIVEN).")
 @click.option("--agent", "-a", "agents", multiple=True, metavar="SPEC", help="Agent spec (same format as 'start').")
+@click.option("--remote", "-r", "remotes", multiple=True, metavar="URL_OR_NAME",
+              help="Remote OFP agent by URL or known slug (same as 'start --remote').")
+@click.option("--show-floor-events", is_flag=True, default=False,
+              help="Pre-enable floor grant/request events on the Floor node.")
 @click.option("--topic", "-t", default=None, help="Initial topic seeded to the floor.")
 @click.option("--no-human", is_flag=True, default=False, help="Omit the human participant node.")
 @click.option("--max-turns", "-n", default=None, type=int, help="Stop after this many turns.")
@@ -1717,6 +1731,8 @@ def canvas(
     open_browser: bool,
     policy: str | None,
     agents: tuple[str, ...],
+    remotes: tuple[str, ...],
+    show_floor_events: bool,
     topic: str | None,
     no_human: bool,
     max_turns: int | None,
@@ -1749,7 +1765,7 @@ def canvas(
         ) from exc
 
     initial_config = None
-    if agents or policy or topic:
+    if agents or remotes or policy or topic:
         initial_config = _build_canvas_config(
             policy=policy,
             agents=agents,
@@ -1757,6 +1773,8 @@ def canvas(
             no_human=no_human,
             max_turns=max_turns,
             human_name=human_name,
+            remotes=remotes,
+            show_floor_events=show_floor_events,
         )
 
     app = build_app(initial_config=initial_config)
@@ -1781,6 +1799,8 @@ async def _run_web_session(
     host: str = "127.0.0.1",
     port: int = 7860,
     share: bool = False,
+    remote_urls: tuple[str, ...] = (),
+    show_floor_events: bool = False,
 ) -> None:
     """Run the web UI session (Gradio + OFP bus in the same process)."""
     from ofp_playground.status.server import is_loopback
@@ -1788,16 +1808,24 @@ async def _run_web_session(
     if not is_loopback(host) or share:
         raise ValueError("The web control UI supports loopback only; public sharing needs an authenticated deployment profile.")
     from ofp_playground.agents.registry import AgentRegistry
-    from ofp_playground.renderer.gradio_ui import launch_web_session
-
-    bus = MessageBus()
-    floor = FloorManager(bus, policy=policy, renderer=None)
-    registry = AgentRegistry()
 
     # Create the Gradio renderer early so spawn events appear in the web UI
-    from ofp_playground.renderer.gradio_ui import GradioRenderer
+    from ofp_playground.renderer.gradio_ui import (
+        GradioFloorEvents,
+        GradioRenderer,
+        launch_web_session,
+    )
     _human_uris: set[str] = set()
     web_renderer = GradioRenderer(agent_names={}, human_uris=_human_uris)
+
+    bus = MessageBus()
+    # Floor/orchestrator system events (assignments, rounds, manuscript) go to the
+    # web chat like they go to the terminal in `start`.
+    floor = FloorManager(
+        bus, policy=policy,
+        renderer=GradioFloorEvents(web_renderer, show_floor_events=show_floor_events),
+    )
+    registry = AgentRegistry()
     web_renderer.add_system_event(
         "Running in autonomous mode" if no_human else "Interactive mode"
     )
@@ -1813,7 +1841,9 @@ async def _run_web_session(
             name=human_name,
             bus=bus,
             conversation_id=floor.conversation_id,
+            floor_policy=policy.value,  # same turn-taking as the terminal human
         )
+        human.notice_callback = web_renderer.add_system_event
         floor.register_agent(human.speaker_uri, human.name)
         registry.register(human)
         agent_display_names.append(human_name)
@@ -1841,40 +1871,38 @@ async def _run_web_session(
             await session.close()
             raise ValueError(f"Could not start agent: {e}") from e
 
-    if topic or max_turns or no_human:
-        async def _orchestrate():
-            await asyncio.sleep(1.5)
-            if topic:
-                term_renderer.show_system_event(f'Topic: "{topic}"')
-                web_renderer.add_system_event(f'Topic: "{topic}"')
-                floor._memory_store.seed_goal(topic)
-                await _seed_topic(topic, floor, bus)
-                # Grant floor to orchestrator/director — they never self-request
-                if floor._orchestrator_uri:
-                    await asyncio.sleep(0.2)
-                    await floor.grant_to(floor._orchestrator_uri)
-                elif floor._director_uri and not floor._showrunner_uri:
-                    await asyncio.sleep(0.2)
-                    await floor.grant_to(floor._director_uri)
-            if no_human and not topic:
-                first_uri = floor._orchestrator_uri or floor._director_uri or next(iter(floor.active_agents), None)
-                if first_uri:
-                    await floor.grant_to(first_uri)
-            if max_turns:
-                while floor.history.__len__() < max_turns:
-                    await asyncio.sleep(2.0)
-                term_renderer.show_system_event(
-                    f"Reached {max_turns} turns — stopping."
-                )
-                floor.stop()
-        tasks.append(_orchestrate())
+    # Connect remote agents (same as `start --remote`)
+    for slug_or_url in remote_urls:
+        try:
+            remote = await _connect_remote_agent(slug_or_url, floor, bus, registry, term_renderer)
+            web_renderer.add_agent(remote.speaker_uri, remote.name)
+            web_renderer.add_system_event(f"Connected {remote.name} → {slug_or_url}")
+            agent_display_names.append(remote.name)
+        except Exception as e:
+            console.print(f"[red]Failed to connect remote agent: {e}[/red]")
+            await session.close()
+            raise ValueError(f"Could not connect remote agent: {e}") from e
+
+    floor.max_turns = max_turns
+    from ofp_playground.session import kickoff
+    tasks.append(kickoff(
+        floor, bus, topic=topic, human=human, notify=web_renderer.add_system_event,
+        delay=1.5, seed=_seed_topic,
+    ))
 
     # Get the running loop and launch Gradio from this coroutine's thread
     loop = asyncio.get_event_loop()
 
     async def _web_spawn_fn(spec: str) -> None:
-        """Spawn an agent from the Gradio UI into the running session."""
+        """Spawn an agent (or connect a remote one) from the Gradio UI."""
         try:
+            if spec.startswith("remote "):
+                remote = await _connect_remote_agent(
+                    spec.split(maxsplit=1)[1].strip(), floor, bus, registry, term_renderer,
+                )
+                web_renderer.add_agent(remote.speaker_uri, remote.name)
+                web_renderer.add_system_event(f"Connected {remote.name}")
+                return
             at, name, desc, model_ov, maxtok_ov, timeout_ov, maxretry_ov = _parse_agent_spec(spec)
             await _spawn_llm_agent(
                 at, name, desc, floor, bus, registry,
@@ -1899,6 +1927,13 @@ async def _run_web_session(
     async def _web_input_fn(text: str) -> None:
         if human is None or human.speaker_uri not in floor.active_agents or floor._stop_event.is_set():
             raise ValueError("Human input is no longer available")
+        if text.strip().startswith("/"):
+            # Same floor commands as the terminal: /grant NAME, /pass, /floor, /agents.
+            result = await session.floor_command(text, human.speaker_uri)
+            web_renderer.add_system_event(
+                result or f"Unknown command {text.split()[0]} — try /grant NAME, /pass, /floor, /agents"
+            )
+            return
         await session.enqueue_input(human.speaker_uri, text)
         web_renderer.add_user_input(human.name, text)
 

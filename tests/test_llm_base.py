@@ -202,6 +202,8 @@ class TestParseShowrunnerMessage:
         text = "[DIRECTIVE for Writer]: Write a detailed backstory\nwith multiple sentences."
         agent._parse_showrunner_message(text)
         assert "detailed backstory" in agent._current_director_instruction
+        # The continuation line (and any context the floor appends) must survive.
+        assert "with multiple sentences." in agent._current_director_instruction
 
 
 # ---------------------------------------------------------------------------

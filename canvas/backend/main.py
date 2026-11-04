@@ -57,6 +57,10 @@ class NodeData(BaseModel):
     humanName: str = "User"
     agentType: str = ""
     remoteTarget: str = ""
+    # Same per-agent tuning as the CLI spec flags -timeout / -max-retries / -max-tokens
+    timeout: float | None = Field(default=None, gt=0)
+    maxRetries: int | None = Field(default=None, ge=0)
+    maxTokens: int | None = Field(default=None, gt=0)
 
 
 class CanvasNode(BaseModel):
@@ -83,6 +87,9 @@ class AddAgentRequest(BaseModel):
     slug: str = ""
     agentType: str = ""
     remoteTarget: str = ""
+    timeout: float | None = Field(default=None, gt=0)
+    maxRetries: int | None = Field(default=None, ge=0)
+    maxTokens: int | None = Field(default=None, gt=0)
 
 
 class HumanMessageRequest(BaseModel):
@@ -166,6 +173,9 @@ async def _spawn_agent_for_canvas(
     renderer: TerminalRenderer,
     settings: Settings,
     bridge: SessionBridge,
+    timeout: float | None = None,
+    max_retries: int | None = None,
+    max_tokens: int | None = None,
 ) -> None:
     """Spawn an LLM agent and register it on the running floor."""
     # Lazy import to avoid circular deps at module load time
@@ -184,6 +194,9 @@ async def _spawn_agent_for_canvas(
             renderer=renderer,
             settings=settings,
             model_override=model or None,
+            max_tokens_override=max_tokens,
+            timeout_override=timeout,
+            max_retries_override=max_retries,
         )
         bridge.register_agent(agent.speaker_uri, agent.name)
         bridge.push_raw({
@@ -302,6 +315,9 @@ async def _run_canvas_session(
                         renderer=renderer,
                         settings=settings,
                         bridge=bridge,
+                        timeout=d.timeout,
+                        max_retries=d.maxRetries,
+                        max_tokens=d.maxTokens,
                     )
                 )
 
@@ -325,6 +341,10 @@ async def _run_canvas_session(
                 name=human_name_val,
                 bus=bus,
                 conversation_id=floor.conversation_id,
+                floor_policy=policy.value,  # same turn-taking as the terminal human
+            )
+            human.notice_callback = lambda text: bridge.push_raw(
+                {"type": "system_event", "text": text, "ts": time.time() * 1000}
             )
             floor.register_agent(human.speaker_uri, human.name)
             registry.register(human)
@@ -338,37 +358,13 @@ async def _run_canvas_session(
         # Always run _orchestrate so the floor is kick-started even without a topic.
         human_agent = state.get("human_agent")
 
-        async def _orchestrate() -> None:
-            await asyncio.sleep(1.0)
-            if topic:
-                floor._memory_store.seed_goal(topic)
-                from ofp_playground.cli import _seed_topic as _st
-                await _st(topic, floor, bus)
-                # If the human holds the floor in sequential mode, yield it so
-                # agents can respond to the seeded topic; human re-queues for next turn.
-                if human_agent is not None and floor.floor_holder == human_agent.speaker_uri:
-                    human_agent._has_floor = False
-                    await human_agent.yield_floor()
-                    await human_agent.request_floor()
-                await asyncio.sleep(0.2)
+        # Same start-up and turn limit as `start` / `web` (session.kickoff).
+        floor.max_turns = max_turns
+        from ofp_playground.cli import _seed_topic
+        from ofp_playground.session import kickoff
 
-            # Grant floor to the orchestrator / director / first agent so the
-            # conversation kicks off even without an initial human message.
-            if floor._orchestrator_uri:
-                await floor.grant_to(floor._orchestrator_uri)
-            elif floor._director_uri and not floor._showrunner_uri:
-                await floor.grant_to(floor._director_uri)
-            elif no_human and not topic:
-                # Autonomous session with no topic: grant to the first registered
-                # agent so the conversation can start on its own.
-                first_uri = next(iter(floor._agents), None)
-                if first_uri:
-                    await floor.grant_to(first_uri)
-
-            if max_turns:
-                while floor.history.__len__() < max_turns:
-                    await asyncio.sleep(2.0)
-                floor.stop()
+        def _notify(text: str) -> None:
+            bridge.push_raw({"type": "system_event", "text": text, "ts": time.time() * 1000})
 
         async def _observe_floor() -> None:
             previous = ""
@@ -378,11 +374,11 @@ async def _run_canvas_session(
                     "policy": floor._policy.policy.value, "holder": floor.floor_holder,
                     "holders": list(floor.floor_holders),
                     "holder_name": floor._agents.get(floor.floor_holder or ""),
-                    "queue": [uri for uri, _reason in floor._policy.queue],
-                    "queue_names": [floor._agents.get(uri, uri) for uri, _ in floor._policy.queue],
+                    "queue": floor.floor_queue,
+                    "queue_names": [floor._agents.get(uri, uri) for uri in floor.floor_queue],
                     "participants": [{"speaker_uri": uri, "name": name} for uri, name in floor._agents.items()],
                     "restricted": sorted(floor._draining_agents),
-                    "turn_count": len(floor.history),
+                    "turn_count": floor.utterance_count,
                 }
                 current = json.dumps(snapshot, sort_keys=True)
                 if current != previous:
@@ -390,7 +386,10 @@ async def _run_canvas_session(
                     previous = current
                 await asyncio.sleep(0.25)
 
-        await session.run(_orchestrate(), _observe_floor())
+        await session.run(
+            kickoff(floor, bus, topic=topic, human=human_agent, notify=_notify, seed=_seed_topic),
+            _observe_floor(),
+        )
     finally:
         await session.close()
         bridge.push_raw({"type": "session_ended"})
@@ -632,6 +631,9 @@ def build_app(initial_config: dict | None = None, *, authenticate: bool = True) 
                         renderer=renderer,
                         settings=settings,
                         bridge=bridge,
+                        timeout=req.timeout,
+                        max_retries=req.maxRetries,
+                        max_tokens=req.maxTokens,
                     )
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -688,8 +690,22 @@ def build_app(initial_config: dict | None = None, *, authenticate: bool = True) 
                     state["human_agent"] = None
             return operation
 
+    @app.post("/session/floor/grant/{name}")
+    async def floor_grant(name: str) -> dict[str, Any]:
+        """Moderator control: give an agent the floor (same as /grant in the CLI)."""
+        async with control_lock:
+            session = state.get("session")
+            floor = state.get("floor")
+            if session is None or floor is None or floor._stop_event.is_set():
+                raise HTTPException(status_code=409, detail="No active session")
+            if floor._resolve_agent_uri_by_name(name) is None:
+                raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+            result = await session.floor_command(f"/grant {name}")
+            bridge.push_raw({"type": "system_event", "text": result, "ts": time.time() * 1000})
+            return {"ok": True, "result": result}
+
     @app.post("/session/message")
-    async def session_message(req: HumanMessageRequest) -> dict[str, bool]:
+    async def session_message(req: HumanMessageRequest) -> dict[str, Any]:
         async with control_lock:
             human = state.get("human_agent")
             floor = state.get("floor")
@@ -702,6 +718,16 @@ def build_app(initial_config: dict | None = None, *, authenticate: bool = True) 
             session = state.get("session")
             if session is None:
                 raise HTTPException(status_code=409, detail="Session controls are initializing")
+            if req.text.strip().startswith("/"):
+                # Same floor commands as the terminal and web chat.
+                result = await session.floor_command(req.text, human.speaker_uri)
+                if result is None:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="Unknown command — use /grant NAME, /pass, /floor or /agents",
+                    )
+                bridge.push_raw({"type": "system_event", "text": result, "ts": time.time() * 1000})
+                return {"ok": True, "result": result}
             try:
                 await session.enqueue_input(human.speaker_uri, req.text)
             except ValueError as exc:

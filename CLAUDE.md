@@ -39,9 +39,9 @@ pip install -e ".[canvas]"     # adds fastapi + uvicorn
 cd canvas/frontend && npm install && npm run build
 ```
 
-Key CLI flags for `start` and `web`: `--policy`, `--agent` (repeatable), `--remote` (remote agent slug/URL, repeatable), `--topic`, `--no-human` (fully autonomous sessions), `--max-turns`, `--human-name` (display name for the human participant), `--show-floor-events` (print grantFloor/revokeFloor/requestFloor protocol events; hidden by default), `-v`/`--verbose`.
+Session flags shared by `start`, `web` and `canvas` (canvas uses them to pre-populate the graph): `--policy`, `--agent` (repeatable), `--remote` (remote agent slug/URL, repeatable), `--topic`, `--no-human` (fully autonomous sessions), `--max-turns`, `--human-name` (display name for the human participant), `--show-floor-events` (show grantFloor/revokeFloor/requestFloor events; hidden by default). `start`/`web` also take `-v`/`--verbose`. Keep the three surfaces in parity. [`docs/interfaces.md`](docs/interfaces.md) maps every option and runtime control across CLI/web/canvas, and `TestSurfaceParity` in `tests/test_floor_delegation.py` guards it.
 
-Tests use `async def` without `@pytest.mark.asyncio` — `asyncio_mode = "auto"` is set in `pyproject.toml`. Ruff enforces `line-length = 100`, `target-version = "py310"`.
+Tests use `async def` without `@pytest.mark.asyncio` — `asyncio_mode = "auto"` is set in `pyproject.toml`. Ruff enforces `line-length = 100`, `target-version = "py312"`. CI runs the locked mypy/ruff on Python 3.12 and 3.13 (`.github/workflows/checks.yml`: pytest, `ruff check src/ canvas/backend`, `mypy src/ canvas/backend`, `scripts/check_docs.py`); run them from the `uv sync --locked` environment. Unlocked tool installs report spurious import errors. Avoid comments that begin with `type:`, because mypy reads them as type comments.
 
 ## Architecture
 
@@ -56,7 +56,17 @@ Human/LLM Agents → MessageBus → target agent queues
 
 - **[MessageBus](src/ofp_playground/bus/message_bus.py)** routes OFP `Envelope` objects. If an event has no `to` field it broadcasts to all registered agents. The floor manager always receives a copy of every message.
 - **[FloorManager](src/ofp_playground/floor/manager.py)** is the central coordinator. It holds conversation history, manages which agent holds the floor, and drives turn-taking via `FloorController`. It processes all OFP event types: utterances, floor requests/yields, manifest publications, and invite/bye/decline.
-- **[FloorController](src/ofp_playground/floor/policy.py)** implements the 5 floor policies: `SEQUENTIAL`, `ROUND_ROBIN`, `MODERATED`, `FREE_FOR_ALL`, `SHOWRUNNER_DRIVEN`.
+- **[FloorController](src/ofp_playground/floor/policy.py)** is the pure state machine behind the 5 floor policies: `SEQUENTIAL`, `ROUND_ROBIN`, `MODERATED`, `FREE_FOR_ALL`, `SHOWRUNNER_DRIVEN`.
+- **[SessionService / kickoff](src/ofp_playground/session.py)** owns session lifetime, removal (`remove`/`_detach`), human input and the shared floor commands (`floor_command`: `/grant`, `/pass`, `/floor`, `/agents`). `kickoff()` seeds the topic and gives the first grant (`FloorManager.kickoff_target`) identically for CLI, web and canvas.
+- **[agents/uris.py](src/ofp_playground/agents/uris.py)** classifies speaker URIs (`uri_kind`) and reads the media type from OFP features (`media_key_from_envelope`). Use it instead of `"image" in uri` substring checks. Prefixes vary by provider (`gimage-`, `gmusic-`, `sora-` …), and perception agents (`imageclassification-`) are not media.
+
+#### Floor invariants (see [`docs/floor-policies.md`](docs/floor-policies.md))
+
+- A `yieldFloor` from a non-holder is a no-op; every grant goes through `grant_to()` / the controller so the holder is recorded. A bare `_grant_floor()` without updating the controller makes the next yield look stale and stalls the flow.
+- ROUND_ROBIN is a strict ring (successor of the yielder; ring members are never queued). Director/show runner/orchestrator are kept out of the ring and granted at round boundaries (`_handle_round_robin_yield`); an idle full cycle parks the floor.
+- MODERATED: a registered human is the moderator (`_moderators`, `FloorController.manual`). Requests queue until the chair addresses agents by name (`_call_on_addressed_agents`) or `/grant`s them.
+- FREE_FOR_ALL: LLM agents run `_check_relevance()` before requesting; the agent's `floor_policy` (set at spawn) gates it.
+- `FloorManager.max_turns` stops the floor on the N-th agent utterance (`utterance_count`); never use `len(history)` (capped at 100).
 
 ### Agent Hierarchy
 
@@ -79,7 +89,7 @@ BasePlaygroundAgent
         └── GoogleCodingAgent   — ToolCodeExecution (default: gemini-3-flash-preview)
 ```
 
-**Relevance filter**: In non-SHOWRUNNER policies (FREE_FOR_ALL, ROUND_ROBIN), `BaseLLMAgent` calls `_check_relevance()` before each response — a quick yes/no LLM call asking whether the agent has something relevant to contribute. Orchestrator, coding, and director agents always bypass it (`relevance_filter=False`). Can be disabled globally via `settings.defaults.relevance_filter = false` in `~/.ofp-playground/config.toml`.
+**Relevance filter**: Under FREE_FOR_ALL, `BaseLLMAgent._handle_utterance()` calls `_check_relevance()` before requesting the floor in response to a regular utterance. This is a quick yes/no LLM call asking whether the agent has something relevant to contribute. Other policies give every agent a turn by design and skip it. Directives, director scenes and grants bypass it; orchestrator, coding and director agents always bypass it (`relevance_filter=False`). Disable globally via `settings.defaults.relevance_filter = false` in `~/.ofp-playground/config.toml`. Agents learn the policy through `set_floor_policy()`, called by `_spawn_llm_agent()` and by breakout/coding sessions.
 
 All agents extend [`BasePlaygroundAgent`](src/ofp_playground/agents/base.py) which provides:
 - `send_envelope()` / `send_private_utterance()` helpers
@@ -110,9 +120,10 @@ When `SHOWRUNNER_DRIVEN` policy is active, one agent acts as orchestrator. It re
 
 | Directive | Action |
 |-----------|--------|
-| `[ASSIGN AgentName]: task` | Grant floor to that agent with a task |
-| `[ACCEPT]` | Accept the last worker's output into manuscript |
-| `[REJECT AgentName]: reason` | Ask agent to redo |
+| `[ASSIGN AgentName]: task` | Private `[DIRECTIVE for X]` (multi-line task), then grant |
+| `[ASSIGN_PARALLEL A, B]: task` | Same task to several agents; floor returns when all delivered or failed |
+| `[ACCEPT]` / `[ACCEPT plan\|image\|music\|audio\|video]` | Accept the last delivery (all parallel answers) into the manuscript / artifact store only |
+| `[REJECT AgentName]: reason` | Revision directive (reason + original task), then grant |
 | `[KICK AgentName]` | Remove agent from session |
 | `[SPAWN spec]` | Dynamically create a new agent |
 | `[SKIP AgentName]: reason` | Record skip in manuscript, return floor to orchestrator |
@@ -124,6 +135,13 @@ When `SHOWRUNNER_DRIVEN` policy is active, one agent acts as orchestrator. It re
 | `[TASK_COMPLETE]` | End the session, output manuscript |
 
 The FloorManager parses these directives in `_handle_orchestrator_directives()` and accumulates accepted outputs into a shared manuscript.
+
+**Delegation rules** (`_dispatch_assignment`, `_build_directive`, `_handle_showrunner_worker_utterance`, `_handle_worker_without_output`):
+- The directive is always sent **before** the grant.
+- Text workers get the whole directive: the task, the artifact index, the sandbox note, memory, and the pending breakout output once. `BaseLLMAgent._parse_showrunner_message()` captures it all, stopping only at another agent's directive or `[IMAGE]`. Media and remote workers get the bare task.
+- Only the assigned worker or a parallel-batch member counts as a delivery. Humans and other agents speaking meanwhile are context and must not clear `_assigned_uri`. Human input wakes an idle orchestrator.
+- A worker that yields while still assigned delivered nothing. The orchestrator gets the floor back with a `[SYSTEM]` note. Removing an in-flight worker does the same; removing anyone else must not re-grant the orchestrator.
+- A breakout/coding session is not started in the same turn as an `[ASSIGN]`.
 
 **Media auto-accept**: When a media agent (image/video/audio/3d) produces output in `showrunner_driven` mode, the FloorManager auto-accepts it (appends to manuscript, returns floor to orchestrator) without waiting for `[ACCEPT]`. The orchestrator receives `[auto-accepted {type} output]: {text}` in its context so it doesn't re-issue the same `[ASSIGN]`.
 
@@ -194,18 +212,18 @@ The FloorManager initialises the collector at startup and registers each joining
 
 ### Web UI (Gradio)
 
-Use the `ofp-playground web` subcommand (not a flag on `start`) to launch the Gradio interface. Extra flags: `--host`, `--port` (default 7860), `--share`. The `WebHumanAgent` replaces `HumanAgent`; it accepts user input from the browser and streams agent utterances back as chat bubbles. Media (images/video/audio) renders inline.
+Use the `ofp-playground web` subcommand (not a flag on `start`) to launch the Gradio interface. It takes the shared session flags plus `--host` (loopback only), `--port` (default 7860) and `--share` (rejected in the local profile). The `WebHumanAgent` replaces `HumanAgent`, with the same floor behavior: it takes SEQUENTIAL and ROUND_ROBIN turns, yields after speaking, and supports `/pass`. Floor commands typed in the chat box go to `SessionService.floor_command`. The floor manager renders through `GradioFloorEvents`, so assignments, rounds and the manuscript appear in the chat. The spawn panel offers provider (incl. `remote`), task **Type**, model and **Extra flags** (`-timeout`/`-max-retries`/`-max-tokens`). Media (images/video/audio) renders inline.
 
 ### Canvas (Visual Floor Builder)
 
 `ofp-playground canvas` launches a FastAPI backend + React/TypeScript frontend at `http://localhost:8765`. Users drag-and-drop `FloorNode` and `AgentNode` nodes, then click Start — the backend translates the graph into a live OFP session.
 
 **Key files:**
-- [`canvas/backend/main.py`](canvas/backend/main.py) — FastAPI app factory (`build_app()`); REST endpoints: `POST /session/start`, `DELETE /session/stop`, `GET /session/status`, `POST /session/agent/add`, `DELETE /session/agent/{name}`, `POST /session/message`, `GET /trace/live`, `GET /media/{path}`. WebSocket at `/ws/{session_id}`.
+- [`canvas/backend/main.py`](canvas/backend/main.py) — FastAPI app factory (`build_app()`); REST endpoints: `POST /session/start`, `DELETE /session/stop`, `GET /session/status`, `POST /session/agent/add`, `DELETE /session/agent/{name}`, `POST /session/message` (slash text → `floor_command`), `POST /session/floor/grant/{name}`, `POST /session/governance/{agent_id}`, `GET /trace/live`, `GET /media/{path}`, status endpoints. WebSocket at `/ws/{session_id}`.
 - [`canvas/backend/session_bridge.py`](canvas/backend/session_bridge.py) — `SessionBridge` acts as a `MessageBus` collector; serializes OFP envelopes into JSON events (`utterance`, `floor_grant`, `floor_revoke`, `floor_request`) and fans them out to connected WebSocket clients. Late-joining clients receive the full `event_log` replay.
 - [`canvas/frontend/src/`](canvas/frontend/src/) — React/TypeScript frontend (Vite build). Pre-built dist is checked in under `canvas/frontend/dist/` and served by FastAPI's `StaticFiles`.
 
-**`StartRequest` shape** — `nodes` array with `FloorNode` (holds `policy`, `topic`, `maxTurns`, `noHuman`) and `AgentNode` items (holds `provider`, `name`, `model`, `systemPrompt`, `slug`); `edges` array (currently informational only).
+**`StartRequest` shape** — `nodes` array with `FloorNode` (holds `policy`, `topic`, `maxTurns`, `noHuman`, `showFloorEvents`, `humanName`) and `AgentNode` items (holds `provider`, `name`, `model`, `systemPrompt`, `slug`, `agentType`, `remoteTarget`, `timeout`, `maxRetries`, `maxTokens`); `edges` array (currently informational only). The session starts through the shared `session.kickoff()` and `floor.max_turns`.
 
 **Live trace**: `GET /trace/live` generates the D3 timeline HTML with a WebSocket injected (`live_session_id`) so it auto-updates in real time. The `render_trace_html()` function in `trace/renderer.py` now accepts an optional `live_session_id` parameter for this purpose.
 
@@ -247,10 +265,11 @@ showrunner, orchestrator, code-generation
 - Floor manager: `tag:ofp-playground.local,2025:floor-manager`
 - Human agents: `tag:ofp-playground.local,2025:human-{name}`
 - LLM agents: `tag:ofp-playground.local,2025:llm-{name}`
+- Media / vision / perception agents use provider-specific prefixes (`image-`, `gimage-`, `video-`, `gvideo-`, `sora-`, `gmusic-`, `vision-`, `avision-`, `gvision-`, `multimodal-`, `<task>-`). Classify with `agents/uris.py`.
 
 ### In-conversation slash commands
 
-`/help`, `/agents`, `/floor`, `/history`, `/spawn <spec>`, `/kick <name>`, `/quit`
+`/help`, `/agents`, `/floor`, `/grant <name>`, `/pass`, `/history [n]`, `/spawn <type> <name> …`, `/add <agent spec>`, `/connect <slug-or-url>`, `/kick <name>`, `/remove <name> [graceful|force]`, ASP commands (`/status`, `/watch`, `/quarantine`, `/review`, `/clear`, `/personas`, `/models`), `/quit`. `/grant`, `/pass`, `/floor` and `/agents` also work in the web chat and the canvas human input.
 
 ### Session Output
 
@@ -278,7 +297,7 @@ The `examples/` directory contains runnable reference pipelines:
 | `example_platformer.sh` | 3D browser game via multi-agent coding session |
 | `example_song_production.sh` | Music production pipeline (lyrics → music gen) |
 | `free_for_all_brainstorm.sh` | FREE_FOR_ALL policy, relevance filter in action |
-| `moderated_investment_committee.sh` | MODERATED policy |
+| `moderated_investment_committee.sh` | MODERATED policy (human chair calls on analysts by name) |
 | `round_robin_novel.sh` | ROUND_ROBIN creative writing |
 | `sequential_code_review.sh` | SEQUENTIAL code review |
 | `breakout_code_review.sh` | Orchestrator spawning breakout review sessions |

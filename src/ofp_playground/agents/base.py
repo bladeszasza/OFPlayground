@@ -57,6 +57,7 @@ class BasePlaygroundAgent:
         self._active_work = 0
         self._conversation_history: list[dict] = []
         self._pending_floor_request: bool = False  # prevent duplicate floor requests
+        self._floor_policy: str | None = None  # set by the session that spawned the agent
         self._status: AgentStatusPublisher | None = None
         # Retry / timeout settings — overridden per-agent via CLI flags
         self._timeout: float | None = None  # seconds per API call; None = no timeout
@@ -71,6 +72,20 @@ class BasePlaygroundAgent:
     @property
     def speaker_uri(self) -> str:
         return self._speaker_uri
+
+    @property
+    def floor_policy(self) -> str | None:
+        return self._floor_policy
+
+    def set_floor_policy(self, policy: object) -> None:
+        """Tell the agent which floor policy governs the floor it joined.
+
+        Agents mostly don't care, but some behaviour is policy-specific — e.g.
+        the relevance filter only runs under FREE_FOR_ALL, and humans only take
+        turns under SEQUENTIAL / ROUND_ROBIN.
+        """
+        value = getattr(policy, "value", policy)
+        self._floor_policy = str(value).lower() if value else None
 
     @property
     def name(self) -> str:

@@ -144,6 +144,8 @@ Configure in `config.toml`:
 relevance_filter = true   # or false
 ```
 
+The check runs only under `free_for_all`; the other policies give every agent a turn by design.
+
 ---
 
 ## Floor Settings

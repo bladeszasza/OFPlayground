@@ -6,7 +6,7 @@
     {"id": "conv-main", "type": "ConversationNode", "data": {}},
     {"id": "agent-MusicDirector", "type": "AgentNode", "data": {"provider": "anthropic", "name": "MusicDirector", "model": "", "systemPrompt": "You are MusicDirector, a music production orchestrator. First use [ASSIGN LyricWriter]: write complete song lyrics. After [ACCEPT], use [ASSIGN MusicGen]: produce the audio from the accepted lyrics. Then [TASK_COMPLETE].", "slug": "", "agentType": "orchestrator"}},
     {"id": "agent-LyricWriter", "type": "AgentNode", "data": {"provider": "anthropic", "name": "LyricWriter", "model": "", "systemPrompt": "You are LyricWriter, a creative songwriter. When assigned, write complete song lyrics with verse/chorus/bridge. Output only the lyrics, no explanations.", "slug": "", "agentType": ""}},
-    {"id": "agent-MusicGen", "type": "AgentNode", "data": {"provider": "huggingface", "name": "MusicGen", "model": "facebook/musicgen-small", "systemPrompt": "upbeat pop song with piano and drums", "slug": "", "agentType": "text-to-music"}}
+    {"id": "agent-MusicGen", "type": "AgentNode", "data": {"provider": "google", "name": "MusicGen", "model": "", "systemPrompt": "upbeat pop song with piano and drums", "slug": "", "agentType": "text-to-music"}}
   ],
   "edges": [
     {"source": "floor-main", "target": "conv-main"},

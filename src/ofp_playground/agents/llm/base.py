@@ -8,6 +8,7 @@ import re
 from openfloor import Capability, Envelope, Identification, Manifest, SupportedLayers
 
 from ofp_playground.agents.base import BasePlaygroundAgent
+from ofp_playground.agents.uris import media_key_from_envelope
 from ofp_playground.bus.message_bus import FLOOR_MANAGER_URI, MessageBus
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,18 @@ RULES:
 - Keep responses concise. Build on what others said.
 
 Current participants: {participants}"""
+
+
+_CONTROL_LINE_RE = re.compile(
+    r"^\s*\[(?:ASSIGN(?:_PARALLEL)?\s+[^\]]+\]\s*:|ACCEPT\b|REJECT\s|KICK\s|SPAWN\s|SKIP\s|"
+    r"TASK_COMPLETE\]|STORE_MEMORY\b|BREAKOUT(?:_AGENT)?\s|CODING_(?:SESSION|AGENT|CONTEXT|TODO)\s)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _is_orchestrator_control_text(text: str) -> bool:
+    """True when an utterance carries orchestrator directives (handled by the floor)."""
+    return bool(_CONTROL_LINE_RE.search(text))
 
 
 def _uri_to_name(uri: str) -> str:
@@ -196,6 +209,8 @@ class BaseLLMAgent(BasePlaygroundAgent):
             )
             response = await self._quick_check(prompt)
             return response.strip().upper().startswith("YES")
+        except NotImplementedError:
+            return True  # provider has no cheap check — always speak
         except Exception:
             logger.warning('Relevance check failed: see traceback', exc_info=True)
             return True  # Default to speaking if check fails
@@ -211,10 +226,15 @@ class BaseLLMAgent(BasePlaygroundAgent):
         into the system prompt at generation time — NOT into conversation history).
         Returns True if this agent was assigned (should request floor).
         """
+        # Capture the WHOLE directive: the floor manager appends the artifact
+        # index, sandbox note, session memory and breakout output on the lines
+        # after the task. Stop only where another agent's directive (show runner
+        # format) or the [IMAGE] line begins.
         m = re.search(
-            rf"\[DIRECTIVE for {re.escape(self._name)}\]:\s*(.+)",
+            rf"\[(?:PARALLEL )?DIRECTIVE for {re.escape(self._name)}\]:\s*(.+?)"
+            rf"(?=\n\s*\[(?:PARALLEL )?DIRECTIVE for |\n\s*\[IMAGE\]|\Z)",
             text,
-            re.IGNORECASE,
+            re.IGNORECASE | re.DOTALL,
         )
         if m:
             self._current_director_instruction = m.group(1).strip()
@@ -241,7 +261,7 @@ class BaseLLMAgent(BasePlaygroundAgent):
             return
 
         # Detect ShowRunner-format message ([DIRECTIVE for Name]: lines) and handle specially
-        if "[DIRECTIVE for" in text:
+        if "DIRECTIVE for" in text and re.search(r"\[(?:PARALLEL )?DIRECTIVE for ", text):
             assigned = self._parse_showrunner_message(text)
             # Floor-manager directives have an explicit grant; peer directives request one.
             if (assigned and not self._has_floor and self._consecutive_errors < 3
@@ -250,14 +270,16 @@ class BaseLLMAgent(BasePlaygroundAgent):
             # Either way, don't fall through to generic floor-request logic
             return
 
-        # Skip media agent utterances — generated image/video descriptions are noise
-        if any(k in sender_uri for k in ("image", "video", "audio")):
+        # Skip generated-media utterances — their text is just a file description.
+        # Detected from the OFP media feature, not the URI (prefixes vary by provider,
+        # and perception agents such as imageclassification-* produce useful text).
+        if media_key_from_envelope(envelope):
             return
 
-        # Showrunner [ASSIGN X]: directives are broadcast by the orchestrator but handled
-        # privately by the floor manager ([DIRECTIVE for X] + grantFloor).
-        # Ignore the broadcast so agents don't pollute context or fire spurious requestFloor.
-        if re.search(r"\[ASSIGN\s+[^\]]+\]:", text, re.IGNORECASE):
+        # Orchestrator control output ([ASSIGN X]:, [ACCEPT], [SPAWN …] …) is broadcast
+        # but executed privately by the floor manager. Ignore it so workers neither
+        # pollute their context nor fire spurious floor requests.
+        if _is_orchestrator_control_text(text):
             return
 
         # Regular utterance: resolve sender name and add to context
@@ -266,6 +288,11 @@ class BaseLLMAgent(BasePlaygroundAgent):
 
         # Request floor to respond (if not already holding or waiting)
         if not self._has_floor and self._consecutive_errors < 3:
+            # FREE_FOR_ALL grants every request instantly, so without this check
+            # every agent answers every message. Other policies give each agent a
+            # turn by design and skip the extra LLM call.
+            if self._floor_policy == "free_for_all" and not await self._check_relevance(text):
+                return
             await self.request_floor("responding to conversation")
 
     async def _handle_grant_floor(self) -> None:
