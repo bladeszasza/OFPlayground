@@ -300,9 +300,14 @@ export function TraceTimelineNode({ data }: { data: ConversationNodeData }) {
               const hasDst = !Number.isNaN(tx) && tx !== sx
               const dotX  = hasSrc ? sx : NaN
               const r     = evt.type === 'utterance' ? 6 : 5
+              const selected = evt.cursor !== undefined && evt.cursor === data.selectedCursor
 
               return (
-                <g key={evt.id}>
+                <g key={evt.id} role="button" tabIndex={0} className="nodrag nopan"
+                  aria-label={`${fmtTs(evt.ts)} ${evt.type} ${evt.agent}`} aria-pressed={selected}
+                  style={{cursor:'pointer'}} onClick={() => onSelectEvent(evt)}
+                  onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); onSelectEvent(evt) } }}>
+                  {selected && <rect x={0} y={y-ROW_H/2} width={svgW} height={ROW_H} fill="#8bcaff22" stroke="#8bcaff" strokeWidth={1} />}
                   {/* Timestamp */}
                   <text x={6} y={y + 4} fill="#4a6278" fontSize={10}
                     fontFamily="ui-monospace, 'Courier New', monospace">
@@ -325,8 +330,7 @@ export function TraceTimelineNode({ data }: { data: ConversationNodeData }) {
                   {!Number.isNaN(dotX) && (
                     <circle cx={dotX} cy={y} r={r}
                       fill={col} stroke="#0b111a" strokeWidth={1.5}
-                      style={{ cursor: 'pointer' }}
-                      onClick={() => onSelectEvent(evt)}>
+                      style={{ cursor: 'pointer' }}>
                       <title>{`${evt.type} — ${evt.agent}${evt.preview ? `: ${evt.preview}` : ''}`}</title>
                     </circle>
                   )}

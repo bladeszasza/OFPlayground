@@ -7,11 +7,21 @@ import type { HumanNodeData } from '../types'
 export function HumanNode({ data }: { data: HumanNodeData }) {
   const { onSend, sessionRunning } = useCanvas()
   const [input, setInput] = useState('')
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState('')
 
-  const submit = () => {
-    if (!input.trim() || !sessionRunning) return
-    onSend(input.trim())
-    setInput('')
+  const submit = async () => {
+    if (!input.trim() || !sessionRunning || pending) return
+    setPending(true)
+    setError('')
+    try {
+      await onSend(input.trim())
+      setInput('')
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setPending(false)
+    }
   }
 
   return (
@@ -32,6 +42,8 @@ export function HumanNode({ data }: { data: HumanNodeData }) {
         <span style={{ fontWeight: 700, fontSize: 13 }}>{data.humanName}</span>
       </div>
 
+      {data.asp && <p style={{fontSize:10,color:'#b7c5d8'}}>ASP: {data.asp.lifecycle} · {data.asp.health} · {data.asp.governance}{data.asp.stale ? ' · STALE' : ''}</p>}
+
       {data.messages.length > 0 && (
         <div style={{
           maxHeight: 120, overflowY: 'auto',
@@ -51,7 +63,7 @@ export function HumanNode({ data }: { data: HumanNodeData }) {
 
       {sessionRunning && (
         <div style={{ display: 'flex', gap: 6 }}>
-          <input
+          <input className="nodrag nopan" aria-label="Human message"
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -63,13 +75,14 @@ export function HumanNode({ data }: { data: HumanNodeData }) {
               fontSize: 11, boxSizing: 'border-box',
             }}
           />
-          <button onClick={submit} style={{
+          <button className="nodrag nopan" onClick={submit} disabled={pending} style={{
             background: '#1a4731', color: '#68d391',
             border: '1px solid #68d39166',
             borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: 11,
-          }}>Send</button>
+          }}>{pending ? 'Sending…' : 'Send'}</button>
         </div>
       )}
+      {error && <div role="alert" style={{ color: '#fc8181', marginTop: 6 }}>{error}</div>}
     </div>
   )
 }

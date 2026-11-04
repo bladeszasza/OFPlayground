@@ -1,116 +1,26 @@
-// canvas/frontend/src/edges/GlowEdge.tsx
-import { getBezierPath } from '@xyflow/react'
+import { EdgeLabelRenderer, getBezierPath } from '@xyflow/react'
 import type { EdgeProps } from '@xyflow/react'
 import type { GlowEdgeData } from '../types'
 
-export function GlowEdge({
-  id,
-  sourceX, sourceY, targetX, targetY,
-  sourcePosition, targetPosition,
-  data,
-}: EdgeProps) {
-  const edgeData = (data as unknown) as GlowEdgeData
-  const [edgePath] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition })
-  const color = edgeData?.color ?? '#2a3a4c'
-  const active = edgeData?.active ?? false
-  const dashed = edgeData?.dashed ?? false
-  const pulse = edgeData?.pulse ?? null
-
-  return (
-    <>
-      <style>{`
-        @keyframes dashTravel {
-          from { stroke-dashoffset: 300; }
-          to   { stroke-dashoffset: 0;   }
-        }
-        @keyframes edgeBlinkAmber {
-          0%, 100% { opacity: 1; }
-          50%      { opacity: 0.25; }
-        }
-        @keyframes ofp-edge-flash-teal {
-          from { opacity: 1; }
-          to   { opacity: 0; }
-        }
-        @keyframes ofp-edge-flash-purple {
-          from { opacity: 1; }
-          to   { opacity: 0; }
-        }
-      `}</style>
-
-      {/* Base path */}
-      <path
-        id={id as string | undefined}
-        className="react-flow__edge-path"
-        d={edgePath}
-        style={{
-          stroke: color,
-          strokeWidth: active ? 2.5 : 1.5,
-          strokeDasharray: dashed ? '5 4' : undefined,
-          fill: 'none',
-        }}
-      />
-
-      {/* Active glow overlay (floor grant) */}
-      {active && (
-        <path
-          d={edgePath}
-          style={{
-            stroke: color,
-            strokeWidth: 3,
-            strokeDasharray: '10 8',
-            fill: 'none',
-            filter: `drop-shadow(0 0 5px ${color})`,
-            animation: 'dashTravel 1.0s linear infinite',
-            pointerEvents: 'none',
-          }}
-        />
-      )}
-
-      {/* Pulse: amber (requestFloor) — dashed blink */}
-      {pulse === 'amber' && (
-        <path
-          d={edgePath}
-          style={{
-            stroke: '#d4a843',
-            strokeWidth: 2,
-            strokeDasharray: '6 5',
-            fill: 'none',
-            filter: 'drop-shadow(0 0 4px #d4a843)',
-            animation: 'edgeBlinkAmber 0.9s ease-in-out infinite',
-            pointerEvents: 'none',
-          }}
-        />
-      )}
-
-      {/* Pulse: teal (yieldFloor) — solid teal flash fading out */}
-      {pulse === 'teal' && (
-        <path
-          d={edgePath}
-          style={{
-            stroke: '#00bcd4',
-            strokeWidth: 3,
-            fill: 'none',
-            filter: 'drop-shadow(0 0 6px #00bcd4)',
-            animation: 'ofp-edge-flash-teal 1.5s ease-out forwards',
-            pointerEvents: 'none',
-          }}
-        />
-      )}
-
-      {/* Pulse: purple (publishManifest) — solid purple flash fading out */}
-      {pulse === 'purple' && (
-        <path
-          d={edgePath}
-          style={{
-            stroke: '#8b5cf6',
-            strokeWidth: 3,
-            fill: 'none',
-            filter: 'drop-shadow(0 0 6px #8b5cf6)',
-            animation: 'ofp-edge-flash-purple 1.5s ease-out forwards',
-            pointerEvents: 'none',
-          }}
-        />
-      )}
-    </>
-  )
+export function GlowEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data }: EdgeProps) {
+  const edge = data as unknown as GlowEdgeData
+  const [path, labelX, labelY] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition })
+  const flow = edge?.layer === 'flow'
+  const color = !flow && edge?.active ? '#72d19a' : edge?.color ?? '#34475b'
+  const marker = `route-${String(id).replace(/[^a-zA-Z0-9_-]/g, '_')}`
+  return <>
+    <defs>{flow && <marker id={marker} viewBox="0 -4 9 8" refX="8" refY="0" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,-4L9,0L0,4" fill={color} />
+    </marker>}</defs>
+    <path id={id} className="react-flow__edge-path" d={path} markerEnd={flow ? `url(#${marker})` : undefined}
+      style={{ stroke: color, strokeWidth: flow ? 2 : edge?.active ? 2.5 : 1, fill: 'none',
+        strokeDasharray: edge?.dashed ? '5 4' : undefined, opacity: flow ? .85 : .55 }} />
+    {flow && edge.active && <path className="ofp-observed-route-flash" d={path}
+      style={{ stroke: color, strokeWidth: 3, strokeDasharray: '9 14', fill: 'none', pointerEvents: 'none' }} />}
+    {flow && edge.label && <EdgeLabelRenderer><div className="nodrag nopan" style={{
+      position: 'absolute', transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
+      background: '#0f1a29', color, border: `1px solid ${color}77`, borderRadius: 4,
+      padding: '2px 5px', fontSize: 9, maxWidth: 200, pointerEvents: 'none',
+    }}>{edge.label}</div></EdgeLabelRenderer>}
+  </>
 }

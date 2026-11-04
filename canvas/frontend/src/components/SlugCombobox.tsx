@@ -1,5 +1,5 @@
 // canvas/frontend/src/components/SlugCombobox.tsx
-import { useRef, useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import type { SlugEntry } from '../types'
 
 interface SlugComboboxProps {
@@ -11,6 +11,7 @@ interface SlugComboboxProps {
 }
 
 export function SlugCombobox({ value, onChange, slugs, placeholder, style }: SlugComboboxProps) {
+  const listId = useId()
   const [activeIndex, setActiveIndex] = useState(-1)
   const [open, setOpen] = useState(false)
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -55,6 +56,9 @@ export function SlugCombobox({ value, onChange, slugs, placeholder, style }: Slu
     <div style={{ position: 'relative' }}>
       <input
         type="text"
+        role="combobox" aria-label="System prompt or persona" aria-expanded={showList}
+        aria-controls={listId} aria-autocomplete="list"
+        aria-activedescendant={showList && activeIndex >= 0 ? `${listId}-${activeIndex}` : undefined}
         value={value}
         onChange={e => { onChange(e.target.value); setOpen(true); setActiveIndex(-1) }}
         onFocus={() => setOpen(true)}
@@ -64,7 +68,7 @@ export function SlugCombobox({ value, onChange, slugs, placeholder, style }: Slu
         style={style}
       />
       {showList && (
-        <div style={{
+        <div id={listId} role="listbox" style={{
           position: 'absolute', top: 'calc(100% + 3px)', left: 0, right: 0,
           background: '#1a2332', border: '1px solid #2a4060', borderRadius: 6,
           zIndex: 100, overflow: 'hidden', boxShadow: '0 4px 16px #00000077',
@@ -72,6 +76,7 @@ export function SlugCombobox({ value, onChange, slugs, placeholder, style }: Slu
           {filtered.map((entry, i) => (
             <div
               key={entry.slug}
+              id={`${listId}-${i}`} role="option" aria-selected={i === activeIndex}
               onMouseDown={() => {
                 if (closeTimer.current) clearTimeout(closeTimer.current)
                 accept(entry.slug)

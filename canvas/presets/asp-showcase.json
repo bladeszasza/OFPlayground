@@ -1,0 +1,123 @@
+{
+  "_title": "ASP showcase · no API keys",
+  "_description": "Synthetic local runtime: work/floor exchange, one rate limit, input wait, telemetry loss and stalled progress. Select an agent in Agent Status to inspect provenance or quarantine it. Send input to release Input; Stop ends all workers.",
+  "nodes": [
+    {
+      "id": "floor-main",
+      "type": "FloorNode",
+      "data": {
+        "policy": "FREE_FOR_ALL",
+        "topic": "Synthetic ASP showcase. Scripted local agents demonstrate work, retry, input wait, missing telemetry and stalled progress. No model API is called.",
+        "maxTurns": null,
+        "noHuman": false,
+        "humanName": "Operator",
+        "showFloorEvents": true
+      }
+    },
+    {
+      "id": "conv-main",
+      "type": "ConversationNode",
+      "data": {}
+    },
+    {
+      "id": "human-main",
+      "type": "HumanNode",
+      "data": {
+        "humanName": "Operator"
+      }
+    },
+    {
+      "id": "agent-Worker",
+      "type": "AgentNode",
+      "data": {
+        "provider": "demo",
+        "name": "Worker",
+        "agentType": "normal",
+        "model": "scripted-local",
+        "systemPrompt": "Explicit synthetic scenario: normal"
+      }
+    },
+    {
+      "id": "agent-Retry",
+      "type": "AgentNode",
+      "data": {
+        "provider": "demo",
+        "name": "Retry",
+        "agentType": "rate-limit",
+        "model": "scripted-local",
+        "systemPrompt": "Explicit synthetic scenario: rate-limit"
+      }
+    },
+    {
+      "id": "agent-Input",
+      "type": "AgentNode",
+      "data": {
+        "provider": "demo",
+        "name": "Input",
+        "agentType": "input-wait",
+        "model": "scripted-local",
+        "systemPrompt": "Explicit synthetic scenario: input-wait"
+      }
+    },
+    {
+      "id": "agent-Silent",
+      "type": "AgentNode",
+      "data": {
+        "provider": "demo",
+        "name": "Silent",
+        "agentType": "silent",
+        "model": "scripted-local",
+        "systemPrompt": "Explicit synthetic scenario: silent"
+      }
+    },
+    {
+      "id": "agent-Stalled",
+      "type": "AgentNode",
+      "data": {
+        "provider": "demo",
+        "name": "Stalled",
+        "agentType": "stalled",
+        "model": "scripted-local",
+        "systemPrompt": "Explicit synthetic scenario: stalled"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "member-human-main",
+      "source": "floor-main",
+      "target": "human-main",
+      "type": "default"
+    },
+    {
+      "id": "member-agent-Worker",
+      "source": "floor-main",
+      "target": "agent-Worker",
+      "type": "default"
+    },
+    {
+      "id": "member-agent-Retry",
+      "source": "floor-main",
+      "target": "agent-Retry",
+      "type": "default"
+    },
+    {
+      "id": "member-agent-Input",
+      "source": "floor-main",
+      "target": "agent-Input",
+      "type": "default"
+    },
+    {
+      "id": "member-agent-Silent",
+      "source": "floor-main",
+      "target": "agent-Silent",
+      "type": "default"
+    },
+    {
+      "id": "member-agent-Stalled",
+      "source": "floor-main",
+      "target": "agent-Stalled",
+      "type": "default"
+    }
+  ]
+}

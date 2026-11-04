@@ -1,3 +1,4 @@
+import { apiFetch } from '../api'
 // canvas/frontend/src/hooks/useRemoteAgents.ts
 import { useEffect, useState } from 'react'
 
@@ -10,7 +11,7 @@ export interface RemoteAgentEntry {
 export function useRemoteAgents(): RemoteAgentEntry[] {
   const [entries, setEntries] = useState<RemoteAgentEntry[]>([])
   useEffect(() => {
-    fetch('/remote-agents/list')
+    apiFetch('/remote-agents/list')
       .then(r => r.ok ? r.json() : [])
       .then(setEntries)
       .catch(() => {})

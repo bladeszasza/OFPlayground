@@ -6,8 +6,8 @@ export interface CanvasCallbacks {
   onRun: () => void
   onStop: () => void
   onFloorChange: (patch: Partial<FloorNodeData>) => void
-  onKick: (name: string) => void
-  onSend: (text: string) => void
+  onKick: (name: string) => Promise<void>
+  onSend: (text: string) => Promise<void>
   onSelectEvent: (event: FloorEventEntry | null) => void
   sessionRunning: boolean
 }

@@ -25,6 +25,8 @@ export function FloorNode({ data }: { data: FloorNodeData }) {
       borderRadius: 12,
       padding: '14px 16px',
       minWidth: 260,
+      width: 300,
+      boxSizing: 'border-box',
       color: '#e6edf5',
       fontFamily: 'ui-sans-serif, system-ui, sans-serif',
       fontSize: 13,
@@ -46,7 +48,7 @@ export function FloorNode({ data }: { data: FloorNodeData }) {
 
       <label style={{ display: 'block', marginBottom: 8 }}>
         <div style={{ color: '#93a4b8', fontSize: 11, marginBottom: 3 }}>Policy</div>
-        <select
+        <select className="nodrag nopan"
           value={data.policy}
           onChange={(e) => onFloorChange({ policy: e.target.value as FloorPolicy })}
           disabled={isRunning}
@@ -61,7 +63,7 @@ export function FloorNode({ data }: { data: FloorNodeData }) {
 
       <label style={{ display: 'block', marginBottom: 8 }}>
         <div style={{ color: '#93a4b8', fontSize: 11, marginBottom: 3 }}>Topic</div>
-        <input
+        <input className="nodrag nopan"
           type="text"
           value={data.topic}
           onChange={(e) => onFloorChange({ topic: e.target.value })}
@@ -76,9 +78,9 @@ export function FloorNode({ data }: { data: FloorNodeData }) {
       </label>
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-        <label style={{ flex: 1 }}>
+        <label style={{ flex: 1, minWidth: 0 }}>
           <div style={{ color: '#93a4b8', fontSize: 11, marginBottom: 3 }}>Max turns</div>
-          <input
+          <input className="nodrag nopan"
             type="number"
             value={data.maxTurns ?? ''}
             min={1}
@@ -92,9 +94,9 @@ export function FloorNode({ data }: { data: FloorNodeData }) {
             }}
           />
         </label>
-        <label style={{ flex: 1 }}>
+        <label style={{ flex: 1, minWidth: 0 }}>
           <div style={{ color: '#93a4b8', fontSize: 11, marginBottom: 3 }}>MOT (ms)</div>
-          <input
+          <input className="nodrag nopan"
             type="number"
             value={data.mot || ''}
             min={0}
@@ -112,7 +114,7 @@ export function FloorNode({ data }: { data: FloorNodeData }) {
 
       <div style={{ marginBottom: 10 }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-          <input
+          <input className="nodrag nopan"
             type="checkbox"
             checked={data.noHuman}
             onChange={(e) => onFloorChange({ noHuman: e.target.checked })}
@@ -129,7 +131,7 @@ export function FloorNode({ data }: { data: FloorNodeData }) {
         </div>
       )}
 
-      <button
+      <button className="nodrag nopan"
         onClick={isRunning ? onStop : onRun}
         style={{
           width: '100%', padding: '7px 0',
