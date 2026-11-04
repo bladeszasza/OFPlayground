@@ -11,7 +11,8 @@ This release combines runtime hardening, the first local ASP implementation and 
 - Add Canvas status dock, observed transport layers, authoritative floor snapshots, bounded replay/filtering, pinned layout and local browser authorization.
 - Isolate browser authorization cookies between local Canvas ports so simultaneous instances do not replace each other's credentials.
 - Add validated configuration export/import/reopen, resolved persona preview, provider-specific task discovery and credential-presence hints, phone-width controls, reduced motion and square fleet layout. Keep transition history and operation results scoped to the selected agent.
-- Add CLI discovery/status/watch/control commands and Gradio status/participant controls. Fix redirected Windows output and autonomous startup without a topic.
+- Add CLI discovery/status/watch/control commands and Gradio status/participant controls. Fix redirected output with legacy encodings on Windows/Linux and autonomous startup without a topic.
+- Reject coding-workspace symlink escapes into similarly named sibling directories, and consistently reject rooted, drive-relative and UNC paths across supported Python versions.
 - Add a provider-free synthetic ASP showcase, dependency lockfiles, SDK pin and Windows/Linux CI configuration.
 
 Known exception: optional Gradio 6.31.0 prevents Pillow 13 security fixes through its Pillow constraint. The full application remains a local source-checkout distribution. See [dependency review](docs/dependencies.md) and [implementation evidence](docs/implementation-status.md).
