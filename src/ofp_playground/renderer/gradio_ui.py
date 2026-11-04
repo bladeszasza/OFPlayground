@@ -18,11 +18,12 @@ display them in a dimmed, centred style.
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import re
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +146,7 @@ def _envelope_to_chat_messages(
         if media_key and media_path:
             path_obj = Path(media_path)
             if path_obj.exists():
+                media_content: gr.Image | gr.Video | gr.Audio | str
                 if media_key == "image":
                     media_content = gr.Image(value=media_path)
                 elif media_key == "video":
@@ -186,7 +188,8 @@ def _envelope_to_chat_messages(
                         "metadata": {"title": title_with_color},
                     })
                 except Exception:
-                    pass  # silently skip if file can't be read/encoded
+                    logger.exception("Operation failed at an application error boundary")
+                    # silently skip if file can't be read/encoded
 
         # Task-complete banner
         if task_complete:
@@ -241,7 +244,39 @@ class GradioRenderer:
         self._color_map: dict[str, str] = {}
         self._history: list[dict] = []
         self._agent_meta: dict[str, str] = {}  # uri → "type / model"
+        self._status_snapshot: dict = {"agents": []}
+        self._status_participants: dict[str, str] = {}
+        self._participant_choices: list[tuple[str, str]] = []
+        self._status_available = False
+        self._status_problem: str | None = "Waiting for ASP observation"
         self._lock = threading.Lock()
+
+    def update_status(self, snapshot: dict | None, participants: dict[str, str],
+                      choices: list[tuple[str, str]], *, available: bool,
+                      problem: str | None = None) -> None:
+        with self._lock:
+            if snapshot is not None:
+                self._status_snapshot = copy.deepcopy(snapshot)
+            self._status_participants = dict(participants)
+            self._participant_choices = list(choices)
+            self._status_available = available
+            self._status_problem = problem
+
+    def status_markdown(self) -> str:
+        from ofp_playground.renderer.status_text import markdown_status
+
+        with self._lock:
+            return markdown_status(self._status_snapshot, self._status_participants,
+                                   available=self._status_available, problem=self._status_problem)
+
+    def participant_choices(self) -> list[tuple[str, str]]:
+        with self._lock:
+            return list(self._participant_choices)
+
+    def add_user_input(self, name: str, text: str) -> None:
+        with self._lock:
+            self._history.append({"role": "user", "content": text,
+                                  "metadata": {"title": f"{name} · queued input"}})
 
     def add_agent(self, speaker_uri: str, name: str) -> None:
         with self._lock:
@@ -286,12 +321,12 @@ async def _drain_output_queue(
         try:
             envelope = await asyncio.wait_for(output_queue.get(), timeout=1.0)
             gradio_renderer.ingest_envelope(envelope)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             continue
         except asyncio.CancelledError:
             break
-        except Exception as e:
-            logger.error("drain_output_queue error: %s", e)
+        except Exception:
+            logger.exception('drain_output_queue error: see traceback')
 
 
 # ── Custom CSS ────────────────────────────────────────────────────────────────
@@ -330,8 +365,17 @@ def _build_spawn_panel(gr, loop, spawn_fn, gradio_renderer):
       - Spawn button       →  calls spawn_fn(spec) on the event loop
     """
     from ofp_playground.agents import library as _lib
+    from ofp_playground.agents.llm.model_catalog import MODEL_CATALOG
+    from ofp_playground.config.settings import Settings
 
     agents_library = _lib.load()
+    defaults = Settings.load().defaults
+
+    def model_choices(provider):
+        prefix = {"openai": "gpt", "anthropic": "claude", "google": "gemini"}.get(provider)
+        catalog = [model for model in MODEL_CATALOG if prefix and model.startswith(prefix)]
+        configured = getattr(defaults, "llm_model_" + ("huggingface" if provider == "hf" else provider), None)
+        return sorted(set(catalog + ([configured] if configured else [])))
     categories = sorted({v["category"] for v in agents_library.values()})
     _all_agent_choices = sorted(
         [(v["display_name"], k) for k, v in agents_library.items()]
@@ -358,14 +402,18 @@ def _build_spawn_panel(gr, loop, spawn_fn, gradio_renderer):
         # ── Config ─────────────────────────────────────────────────────
         name_box = gr.Textbox(label="Name", placeholder="e.g. Copywriter")
         provider_dd = gr.Dropdown(
-            choices=["hf", "anthropic", "openai", "google"],
+            choices=["demo", "demo:rate-limit", "demo:input-wait", "demo:silent", "demo:stalled",
+                     "hf", "anthropic", "openai", "google"],
             value="hf",
             label="Provider",
         )
-        model_box = gr.Textbox(
+        model_box = gr.Dropdown(
             label="Model (optional)",
-            placeholder="e.g. mistralai/Mistral-7B-Instruct-v0.3",
+            choices=model_choices("hf"),
+            value=None,
+            allow_custom_value=True,
         )
+        gr.Markdown("Search model choices or enter a provider model ID. Empty uses your configured default; availability is checked by the provider on use.")
         system_box = gr.Textbox(
             label="System prompt",
             lines=7,
@@ -373,6 +421,9 @@ def _build_spawn_panel(gr, loop, spawn_fn, gradio_renderer):
         )
         spawn_btn = gr.Button("Spawn", variant="primary")
         spawn_msg = gr.Markdown("", elem_id="spawn-msg")
+
+        provider_dd.change(lambda provider: gr.Dropdown(choices=model_choices(provider), value=None,
+                                                       allow_custom_value=True), [provider_dd], [model_box])
 
         # ── Event handlers ─────────────────────────────────────────────
         if agents_library:
@@ -407,11 +458,19 @@ def _build_spawn_panel(gr, loop, spawn_fn, gradio_renderer):
             if not system:
                 return "**System prompt is required.**"
             parts = [f"-provider {provider}", f"-name {name}", f"-system {system}"]
-            if model.strip():
+            if model and model.strip():
                 parts.append(f"-model {model.strip()}")
             spec = " ".join(parts)
-            asyncio.run_coroutine_threadsafe(spawn_fn(spec), loop)
-            return f"Spawning **{name}** ({provider})…"
+            future = asyncio.run_coroutine_threadsafe(spawn_fn(spec), loop)
+            try:
+                future.result(timeout=30)
+            except TimeoutError:
+                future.cancel()
+                return "**Adding the agent timed out. Check session status before retrying.**"
+            except Exception:
+                logger.exception("Web participant add failed")
+                return "**Agent could not be added. Check the session messages for details.**"
+            return f"Added **{name}** ({provider})."
 
         spawn_btn.click(
             _do_spawn,
@@ -422,6 +481,10 @@ def _build_spawn_panel(gr, loop, spawn_fn, gradio_renderer):
 
 # ── Main entry-point ──────────────────────────────────────────────────────────
 
+class WebServerHandle(Protocol):
+    def close(self) -> None: ...
+
+
 def launch_web_session(
     floor,
     bus,
@@ -429,14 +492,17 @@ def launch_web_session(
     agent_specs_display: list[str],
     policy_name: str,
     loop: asyncio.AbstractEventLoop,
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     port: int = 7860,
     share: bool = False,
-    gradio_renderer: Optional[GradioRenderer] = None,
+    gradio_renderer: GradioRenderer | None = None,
     spawn_fn=None,  # Optional async coroutine: (spec: str) -> None
-) -> None:
-    """Launch the Gradio web UI.  Must be called from the main thread after the
-    asyncio event loop is already running in a background thread.
+    remove_fn=None,
+    governance_fn=None,
+    input_fn=None,
+    stop_fn=None,
+) -> WebServerHandle:
+    """Launch the Gradio web UI and return its server handle to the session owner.
 
     When human_agent is None the UI is watch-only (autonomous agent mode).
     When gradio_renderer is provided (pre-created with spawn events), it is used
@@ -451,64 +517,30 @@ def launch_web_session(
             human_uris=human_uris,
         )
 
-    if human_agent:
-        asyncio.run_coroutine_threadsafe(
-            _drain_output_queue(human_agent.output_queue, gradio_renderer),
-            loop,
-        )
-    else:
-        observer_queue: asyncio.Queue = asyncio.Queue()
-
-        async def _register_and_drain():
-            observer_uri = "tag:ofp-playground.local,2025:web-observer"
-            await bus.register(observer_uri, observer_queue)
-            await _drain_output_queue(observer_queue, gradio_renderer)
-
-        asyncio.run_coroutine_threadsafe(_register_and_drain(), loop)
-
-    # ── Helper: build agent-status markdown ──────────────────────────────────
+    # ── Helper: build actual multidimensional ASP observations ──────────────
     def _build_status_md() -> str:
-        agents = getattr(floor, "active_agents", {})
-        holder = getattr(floor, "floor_holder", None)
-        meta = gradio_renderer._agent_meta
-        lines = []
-        for uri, name in agents.items():
-            label = meta.get(uri, "")
-            suffix = f" ({label})" if label else ""
-            if uri == holder:
-                lines.append(f"**{name}{suffix}** ← *has floor*")
-            else:
-                lines.append(f"{name}{suffix}")
-        if not lines:
-            lines = ["*No agents yet*"]
-        return "\n\n".join(lines)
+        return gradio_renderer.status_markdown()
 
     # ── UI submit helper ──────────────────────────────────────────────────────
     def submit_message(user_text: str, history: list[dict]):
         if not user_text or not user_text.strip():
             return "", history, _build_status_md()
-        icon = "👤"
-        name = human_agent.name if human_agent else "User"
-        history = history + [{
-            "role": "user",
-            "content": user_text,
-            "metadata": {"title": f'<span style="color:#888;font-weight:700">{icon} {name}</span>'},
-        }]
-        asyncio.run_coroutine_threadsafe(
-            human_agent.input_queue.put(user_text),
-            loop,
-        )
-        return "", history, _build_status_md()
+        if input_fn is None:
+            raise gr.Error("Input is unavailable for this session.")
+        future = asyncio.run_coroutine_threadsafe(input_fn(user_text), loop)
+        try:
+            future.result(timeout=3)
+        except TimeoutError:
+            future.cancel()
+            raise gr.Error("Input acknowledgement timed out. Check the conversation before retrying.") from None
+        except Exception:
+            logger.exception("Web input rejected")
+            raise gr.Error("Input was rejected. The participant or session may have ended.") from None
+        return "", gradio_renderer.get_history(), _build_status_md()
 
     # ── Timer tick: merge new messages + update status ────────────────────────
     def poll_updates(history: list[dict]):
-        full = gradio_renderer.get_history()
-        existing_count = len(history)
-        new_msgs = full[existing_count:]
-        if human_agent:
-            # Suppress echoes of the user's own text we already added optimistically
-            new_msgs = [m for m in new_msgs if m.get("role") != "user"]
-        return history + new_msgs, _build_status_md()
+        return gradio_renderer.get_history(), _build_status_md()
 
     # ── Layout ────────────────────────────────────────────────────────────────
     mode_label = "Autonomous (watch-only)" if not human_agent else "Interactive"
@@ -546,7 +578,7 @@ def launch_web_session(
 
             # ── Right: agent status + spawn panel ─────────────────────────
             with gr.Column(scale=1, min_width=240):
-                gr.Markdown("### Active Agents")
+                gr.Markdown("### Agent Status")
                 status_md = gr.Markdown(
                     _build_status_md(),
                     elem_id="agent-status",
@@ -556,6 +588,55 @@ def launch_web_session(
                     _spawn_ui_components = _build_spawn_panel(
                         gr, loop, spawn_fn, gradio_renderer
                     )
+
+                participant = gr.Dropdown(label="Participant", choices=gradio_renderer.participant_choices())
+                removal_mode = gr.Radio(choices=["graceful", "force"], value="graceful", label="Removal mode")
+                gr.Markdown("Graceful lets current work finish for up to 10s; force cancels local work. Submitted provider jobs may continue remotely.")
+                remove_btn = gr.Button("Remove participant", variant="stop", interactive=remove_fn is not None)
+                governance = gr.Radio(choices=["under-review", "quarantined", "normal"], value="under-review", label="Governance")
+                gr.Markdown("Quarantine removes and cancels the participant. Clearing a restriction does not restart it.")
+                governance_btn = gr.Button("Apply governance", interactive=governance_fn is not None)
+                control_msg = gr.Markdown("")
+                stop_btn = gr.Button("Stop session", variant="stop", interactive=stop_fn is not None)
+
+                def _control(uri, value, kind):
+                    if not uri:
+                        return "Select a participant first."
+                    from ofp_playground.renderer.status_text import operation_text
+                    fn = remove_fn if kind == "remove" else governance_fn
+                    if fn is None:
+                        return "Participant controls are unavailable for this embedded session view."
+                    future = asyncio.run_coroutine_threadsafe(fn(uri, value), loop)
+                    try:
+                        return operation_text(future.result(timeout=15))
+                    except TimeoutError:
+                        # Do not cancel a potentially enforced restriction. Observation
+                        # can recover its final result without repeating the command.
+                        return "Control acknowledgement timed out; enforcement is unknown. Check Agent Status before retrying."
+                    except Exception:
+                        logger.exception("Web participant control failed")
+                        return "Control failed. Check participant membership and session messages."
+
+                remove_btn.click(lambda uri, mode: _control(uri, mode, "remove"),
+                                 [participant, removal_mode], [control_msg])
+                governance_btn.click(lambda uri, value: _control(uri, value, "governance"),
+                                     [participant, governance], [control_msg])
+
+                def _stop():
+                    if stop_fn is None:
+                        return "Stopping is unavailable for this embedded session view."
+                    loop.call_soon_threadsafe(stop_fn)
+                    return "Stop requested; the session owner will join all local tasks."
+
+                stop_btn.click(_stop, outputs=[control_msg])
+
+                def _refresh_choices(selected):
+                    choices = gradio_renderer.participant_choices()
+                    return gr.Dropdown(choices=choices, value=selected if selected in {uri for _, uri in choices} else None)
+
+                participant_timer = gr.Timer(2)
+                participant_timer.tick(_refresh_choices, inputs=[participant], outputs=[participant],
+                                       show_progress="hidden", api_visibility="private")
 
         # Wire submit handlers now that all components exist
         if human_agent:
@@ -611,3 +692,4 @@ def launch_web_session(
         footer_links=[],
     )
     logger.info("Gradio UI launched at http://%s:%d", host, port)
+    return demo

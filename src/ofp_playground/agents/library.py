@@ -77,9 +77,9 @@ def resolve_slug(ref: str) -> str:
     Raises ``ValueError`` if not found.
     """
     slug = ref.lstrip("@").strip()
-    soul_path = _AGENTS_DIR / slug / "SOUL.md"
-    if soul_path.exists():
-        return soul_path.read_text(encoding="utf-8")
+    entry = load().get(slug)
+    if entry is not None:
+        return entry["content"]
     raise ValueError(
         f"Agent not found: @{slug}\n"
         f"  Expected: agents/{slug}/SOUL.md\n"

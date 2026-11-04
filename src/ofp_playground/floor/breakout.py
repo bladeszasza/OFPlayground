@@ -23,11 +23,14 @@ import asyncio
 import logging
 import re
 import uuid
+from collections.abc import Callable, Coroutine
 from datetime import datetime
+from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
+    from ofp_playground.status.runtime import SessionStatusRuntime
     from ofp_playground.trace import EventCollector
 
 from openfloor import (
@@ -88,6 +91,12 @@ class BreakoutFloorManager:
         self._running = False
         self._max_rounds = max_rounds
         self._utterance_count = 0
+        self._status_callback: Callable[[str, str], None] | None = None
+        self._active_holders: set[str] = set()
+
+    def _report_floor(self, speaker_uri: str, state: str) -> None:
+        if self._status_callback:
+            self._status_callback(speaker_uri, state)
 
     @property
     def conversation_id(self) -> str:
@@ -111,6 +120,7 @@ class BreakoutFloorManager:
         await self._bus.send(envelope)
 
     async def _grant_floor(self, speaker_uri: str) -> None:
+        self._active_holders.add(speaker_uri)
         from openfloor import To
         envelope = Envelope(
             sender=self._make_sender(),
@@ -123,6 +133,7 @@ class BreakoutFloorManager:
             ],
         )
         await self._send(envelope)
+        self._report_floor(speaker_uri, "has-floor")
 
     async def run_to_completion(self, topic: str) -> list[Utterance]:
         """Run the breakout session and return conversation history.
@@ -142,11 +153,11 @@ class BreakoutFloorManager:
                 try:
                     envelope = await asyncio.wait_for(self._queue.get(), timeout=120.0)
                     await self._process_envelope(envelope)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.warning("Breakout session timed out")
                     break
-                except Exception as e:
-                    logger.error("Breakout error: %s", e, exc_info=True)
+                except Exception:
+                    logger.exception('Breakout error: see traceback')
         finally:
             self._running = False
             await self._bus.unregister(self.speaker_uri)
@@ -211,19 +222,29 @@ class BreakoutFloorManager:
                 return
 
             # Hand off to the next speaker according to breakout policy.
-            next_uri = self._policy.yield_floor(sender_uri)
+            next_uri = self._yield_owned(sender_uri)
             if next_uri:
                 await self._grant_floor(next_uri)
 
     async def _handle_request_floor(self, sender_uri: str) -> None:
+        self._report_floor(sender_uri, "requesting-floor")
         granted = self._policy.request_floor(sender_uri)
         if granted:
             await self._grant_floor(sender_uri)
 
     async def _handle_yield_floor(self, sender_uri: str) -> None:
-        next_uri = self._policy.yield_floor(sender_uri)
+        next_uri = self._yield_owned(sender_uri)
         if next_uri:
             await self._grant_floor(next_uri)
+
+    def _yield_owned(self, sender_uri: str) -> str | None:
+        if sender_uri not in self._active_holders:
+            return None
+        if self._policy.policy != FloorPolicy.FREE_FOR_ALL and self._policy.current_holder != sender_uri:
+            return None
+        self._active_holders.discard(sender_uri)
+        self._report_floor(sender_uri, "yielded")
+        return self._policy.yield_floor(sender_uri)
 
 
 def _agent_turns(history: list) -> list:
@@ -329,7 +350,8 @@ async def run_breakout_session(
     parent_conversation_id: str,
     max_rounds: int = 6,
     parent_renderer=None,
-    trace_collector: "EventCollector | None" = None,
+    trace_collector: EventCollector | None = None,
+    status_runtime: SessionStatusRuntime | None = None,
 ) -> BreakoutResult:
     """Run a full breakout session and return a BreakoutResult.
 
@@ -379,10 +401,10 @@ async def run_breakout_session(
         )
 
     if parent_renderer:
-        agent_names = ", ".join(a.name for a in agents)
+        agent_labels = ", ".join(a.name for a in agents)
         parent_renderer.show_system_event(
             f"[Breakout] Starting: {topic[:60]} | policy={policy.value} | "
-            f"agents=[{agent_names}] | max_rounds={max_rounds}"
+            f"agents=[{agent_labels}] | max_rounds={max_rounds}"
         )
 
     # Wire fresh agents to the breakout bus
@@ -404,14 +426,21 @@ async def run_breakout_session(
             agent.set_name_registry(name_registry)
 
     # Start agent run loops and breakout floor
-    agent_tasks = [asyncio.create_task(_run_agent_for_breakout(a)) for a in agents]
+    child_status = status_runtime.child(breakout_fm.conversation_id) if status_runtime else None
+    if child_status:
+        breakout_fm._status_callback = child_status.floor_transition
+        for agent in agents:
+            child_status.track(agent)
+    agent_tasks = [asyncio.create_task(
+        child_status.run_agent(a, partial(_run_agent_for_breakout, a))
+        if child_status else _run_agent_for_breakout(a)) for a in agents]
 
     try:
-        history = await asyncio.wait_for(
+        history = await _await_child_floor(
             breakout_fm.run_to_completion(topic),
-            timeout=300.0,  # 5-minute hard timeout
+            agent_tasks, timeout=300.0,  # 5-minute hard timeout
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("Breakout hard timeout after 300s")
         history = breakout_fm._history.all()
     finally:
@@ -439,6 +468,24 @@ async def run_breakout_session(
     )
 
 
+async def _await_child_floor(floor: Coroutine[Any, Any, list], tasks: list[asyncio.Task], *, timeout: float) -> list:
+    """A failed child must end its scoped floor rather than leak until timeout."""
+    floor_task = asyncio.create_task(floor)
+    try:
+        done, _ = await asyncio.wait({floor_task, *tasks}, timeout=timeout,
+                                    return_when=asyncio.FIRST_COMPLETED)
+        if not done:
+            raise TimeoutError
+        if floor_task in done:
+            return floor_task.result()
+        for task in done:
+            task.result()
+        raise RuntimeError("Child agent stopped before its scoped floor completed")
+    finally:
+        floor_task.cancel()
+        await asyncio.gather(floor_task, return_exceptions=True)
+
+
 async def _run_agent_for_breakout(agent) -> None:
     """Run an agent's event loop for the duration of a breakout.
 
@@ -450,7 +497,7 @@ async def _run_agent_for_breakout(agent) -> None:
             try:
                 envelope = await asyncio.wait_for(agent._queue.get(), timeout=1.0)
                 await agent._dispatch(envelope)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
     except asyncio.CancelledError:
         return

@@ -23,6 +23,11 @@ from ofp_playground.models.artifact import Utterance
 # Minimal concrete agent (no-op run) for testing base logic
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def isolate_background_status(monkeypatch):
+    """Unit sessions do not launch persistent services; ASP tests inject/connect explicitly."""
+    monkeypatch.setenv("OFP_STATUS_DISABLED", "1")
+
 class ConcreteAgent(BasePlaygroundAgent):
     """Minimal subclass that satisfies the abstract run() requirement."""
     async def run(self):

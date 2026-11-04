@@ -7,7 +7,7 @@ export type FloorPolicy =
   | 'FREE_FOR_ALL'
   | 'SHOWRUNNER_DRIVEN'
 
-export type AgentProvider = 'anthropic' | 'openai' | 'google' | 'huggingface' | 'remote'
+export type AgentProvider = 'anthropic' | 'openai' | 'google' | 'huggingface' | 'remote' | 'demo'
 
 export type SessionState = 'idle' | 'running' | 'stopped'
 
@@ -35,6 +35,8 @@ export interface FloorEventEntry {
   preview?: string
   ts: number
   raw?: Record<string, unknown>   // full WSEvent payload for inspector
+  cursor?: number
+  replay?: boolean
 }
 
 export interface EventInspectorNodeData {
@@ -56,6 +58,11 @@ export interface FloorNodeData {
 }
 
 export interface AgentNodeData {
+  pinned?: boolean
+  replaying?: boolean
+  instanceId?: string
+  speakerUri?: string
+  asp?: { lifecycle: string; health: string; governance: string; stale: boolean; provenance: string }
   provider: AgentProvider
   name: string
   model: string
@@ -69,11 +76,15 @@ export interface AgentNodeData {
 }
 
 export interface HumanNodeData {
+  instanceId?: string
+  speakerUri?: string
+  asp?: AgentNodeData['asp']
   humanName: string
   messages: Message[]
 }
 
 export interface ConversationNodeData {
+  selectedCursor?: number
   sessionId: string | null
   policy: string
   topic: string
@@ -99,6 +110,10 @@ export interface GlowEdgeData {
   color: string        // stroke color
   dashed: boolean      // true for artifact edges
   pulse?: 'amber' | 'teal' | 'purple' | null
+  layer?: 'membership' | 'flow' | 'artifact'
+  label?: string
+  observedAt?: number
+  failed?: boolean
 }
 
 export interface ArtifactCardData {
@@ -116,7 +131,12 @@ export interface ArtifactCardData {
 
 // ── WebSocket event union ─────────────────────────────────────────────────────
 
-export type WSEvent =
+export type WSEvent = { cursor?: number; replay?: boolean; ts?: string | number;
+  conversation_id?: string; scope_id?: string; scope_kind?: string; parent_conversation_id?: string;
+  delivery_outcomes?: Record<string, string> } & (
+  | { type: 'floor_snapshot'; policy: string; holder: string | null; holder_name?: string | null; turn_count?: number;
+      queue: string[]; queue_names?: string[]; participants: { speaker_uri: string; name: string }[];
+      restricted?: string[]; holders?: string[] }
   | { type: 'utterance'; sender: string; sender_uri: string; text: string; media: { type: string; url: string } | null; envelope_json?: Record<string, unknown> }
   | { type: 'floor_grant'; to: string; to_uri?: string; envelope_json?: Record<string, unknown> }
   | { type: 'floor_revoke'; from: string; from_uri?: string; envelope_json?: Record<string, unknown> }
@@ -126,11 +146,13 @@ export type WSEvent =
   | { type: 'artifact_saved'; slug: string; kind: string; agent: string; preview: string }
   | { type: 'image_saved'; agent: string; url: string }
   | { type: 'memory_saved'; category: string; content: string; agent: string | null }
-  | { type: 'agent_joined'; name: string; provider: string }
+  | { type: 'agent_joined'; name: string; provider: string; instance_id?: string; speaker_uri?: string }
   | { type: 'agent_kicked'; name: string }
   | { type: 'agent_spawning'; name: string; provider: string }
   | { type: 'error'; agent: string; message: string; retryable: boolean }
   | { type: 'session_ended' }
+  | { type: 'replay_gap'; oldest_cursor: number }
+)
 
 // ── Agent library entry ───────────────────────────────────────────────────────
 

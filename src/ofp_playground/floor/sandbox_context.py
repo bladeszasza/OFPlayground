@@ -4,7 +4,6 @@ from __future__ import annotations
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from ofp_playground.memory.artifact_store import ArtifactStore
 from ofp_playground.memory.store import MemoryStore
@@ -42,8 +41,8 @@ def _render_session_memory(memory_store: MemoryStore) -> str:
 
 def sync_sandbox_context(
     sandbox_dir: Path,
-    artifact_store: Optional[ArtifactStore],
-    memory_store: Optional[MemoryStore],
+    artifact_store: ArtifactStore | None,
+    memory_store: MemoryStore | None,
 ) -> SandboxContextFiles:
     """Mirror accepted phase docs and selected memory notes into *sandbox_dir*.
 

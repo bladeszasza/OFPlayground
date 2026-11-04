@@ -4,8 +4,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import anthropic
 from pathlib import Path
-from typing import Optional
 
 from openfloor import Capability, Envelope, Identification, Manifest, SupportedLayers
 
@@ -43,13 +46,15 @@ class AnthropicVisionAgent(BaseLLMAgent):
         # Override URI from BaseLLMAgent's llm- prefix to avision- prefix
         self._speaker_uri = ANTHROPIC_VISION_URI_TEMPLATE.format(name=name.lower().replace(" ", "-"))
         self._service_url = f"local://avision-{name.lower()}"
-        self._client = None
-        self._pending_image: Optional[tuple[str, str]] = None  # (file_path, mime_type)
-        self._pending_image_context: Optional[str] = None
+        self._client: anthropic.Anthropic | None = None
+        self._pending_image: tuple[str, str] | None = None  # (file_path, mime_type)
+        self._pending_image_context: str | None = None
 
     def _build_manifest(self) -> Manifest:
         return Manifest(
             identification=Identification(
+                organization="OFP Playground",
+                synopsis=f"Local agent: {self._name}",
                 speakerUri=self._speaker_uri,
                 serviceUrl=self._service_url,
                 conversationalName=self._name,
@@ -70,7 +75,7 @@ class AnthropicVisionAgent(BaseLLMAgent):
             self._client = anthropic.Anthropic(api_key=self._api_key)
         return self._client
 
-    def _extract_image_from_envelope(self, envelope: Envelope) -> Optional[tuple[str, str]]:
+    def _extract_image_from_envelope(self, envelope: Envelope) -> tuple[str, str] | None:
         """Return (file_path, mime_type) for the first image feature found in envelope."""
         for event in (envelope.events or []):
             de = getattr(event, "dialogEvent", None)
@@ -102,7 +107,7 @@ class AnthropicVisionAgent(BaseLLMAgent):
     async def _quick_check(self, prompt: str) -> str:
         return "YES"  # Vision agent always analyzes images when present
 
-    async def _generate_response(self, participants: list[str]) -> Optional[str]:
+    async def _generate_response(self, participants: list[str]) -> str | None:
         if not self._pending_image:
             return None
 
@@ -115,8 +120,8 @@ class AnthropicVisionAgent(BaseLLMAgent):
             # Sniff actual format — the envelope's mime_type can be wrong when the image
             # generator defaults to "image/png" but Gemini returned JPEG bytes.
             mime_type = _sniff_mime(Path(path), fallback=mime_type)
-        except Exception as e:
-            logger.error("[%s] Could not read image %s: %s", self._name, path, e)
+        except Exception:
+            logger.exception('[%s] Could not read image %s: see traceback', self._name, path)
             return None
 
         loop = asyncio.get_event_loop()

@@ -41,7 +41,7 @@ class NERAgent(BaseTextPerceptionAgent):
 
         for token in result:
             # entity_group is set when the API uses aggregation
-            raw_label = getattr(token, "entity_group", None) or getattr(token, "entity", "O")
+            raw_label = str(getattr(token, "entity_group", None) or getattr(token, "entity", "O") or "O")
             if raw_label == "O":
                 continue
             score = getattr(token, "score", 0)

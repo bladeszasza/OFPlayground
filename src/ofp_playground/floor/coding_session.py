@@ -32,11 +32,14 @@ import json
 import logging
 import re
 import uuid
+from collections.abc import Callable
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
+    from ofp_playground.status.runtime import SessionStatusRuntime
     from ofp_playground.trace import EventCollector
 
 from openfloor import (
@@ -51,6 +54,7 @@ from openfloor import (
 )
 
 from ofp_playground.bus.message_bus import MessageBus
+from ofp_playground.floor.breakout import _await_child_floor
 from ofp_playground.floor.coding_session_tools import (
     TodoList,
     build_file_tools,
@@ -156,6 +160,12 @@ class CodingSessionManager:
             if item and item.strip()
         )))
         self._contributors: set[str] = set()  # URIs of agents that have spoken
+        self._status_callback: Callable[[str, str], None] | None = None
+        self._active_holders: set[str] = set()
+
+    def _report_floor(self, speaker_uri: str, state: str) -> None:
+        if self._status_callback:
+            self._status_callback(speaker_uri, state)
 
     @property
     def conversation_id(self) -> str:
@@ -191,6 +201,7 @@ class CodingSessionManager:
         await self._bus.send(envelope)
 
     async def _grant_floor(self, speaker_uri: str) -> None:
+        self._active_holders.add(speaker_uri)
         from openfloor import To
 
         envelope = Envelope(
@@ -204,6 +215,7 @@ class CodingSessionManager:
             ],
         )
         await self._send(envelope)
+        self._report_floor(speaker_uri, "has-floor")
 
     async def run_to_completion(self, topic: str) -> list[Utterance]:
         """Run the coding session and return conversation history."""
@@ -228,11 +240,11 @@ class CodingSessionManager:
                 try:
                     envelope = await asyncio.wait_for(self._queue.get(), timeout=180.0)
                     await self._process_envelope(envelope)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.warning("Coding session queue timed out")
                     break
-                except Exception as e:
-                    logger.error("Coding session error: %s", e, exc_info=True)
+                except Exception:
+                    logger.exception('Coding session error: see traceback')
         finally:
             self._running = False
             await self._bus.unregister(self.speaker_uri)
@@ -307,11 +319,18 @@ class CodingSessionManager:
             # avoid double-granting.
 
     async def _handle_request_floor(self, sender_uri: str) -> None:
+        self._report_floor(sender_uri, "requesting-floor")
         granted = self._policy.request_floor(sender_uri)
         if granted:
             await self._grant_floor(sender_uri)
 
     async def _handle_yield_floor(self, sender_uri: str) -> None:
+        if sender_uri not in self._active_holders:
+            return
+        if self._policy.policy != FloorPolicy.FREE_FOR_ALL and self._policy.current_holder != sender_uri:
+            return
+        self._active_holders.discard(sender_uri)
+        self._report_floor(sender_uri, "yielded")
         next_uri = self._policy.yield_floor(sender_uri)
         if next_uri:
             await self._grant_floor(next_uri)
@@ -406,7 +425,7 @@ async def _call_anthropic_with_tools(
             "tool_choice": {"type": "auto"},
         }
 
-        response = await loop.run_in_executor(None, lambda: client.messages.create(**kwargs))
+        response = await loop.run_in_executor(None, partial(client.messages.create, **kwargs))
 
         final_text = ""
         tool_calls = []
@@ -414,9 +433,8 @@ async def _call_anthropic_with_tools(
         for block in response.content:
             if block.type == "text":
                 final_text = block.text.strip()
-            elif block.type == "tool_use":
-                if is_file_tool(block.name):
-                    tool_calls.append(block)
+            elif block.type == "tool_use" and is_file_tool(block.name):
+                tool_calls.append(block)
 
         if not tool_calls:
             return final_text
@@ -462,7 +480,7 @@ async def _call_openai_with_tools(
             "tool_choice": "auto",
         }
 
-        response = await loop.run_in_executor(None, lambda: client.responses.create(**kwargs))
+        response = await loop.run_in_executor(None, partial(client.responses.create, **kwargs))
 
         final_text = ""
         tool_calls = []
@@ -529,7 +547,7 @@ async def _call_google_with_tools(
             c = genai.Client(api_key=agent._api_key)
             return c.models.generate_content(model=agent._model, contents=cts, config=cfg)
 
-        response = await loop.run_in_executor(None, lambda: _call(contents, config))
+        response = await loop.run_in_executor(None, partial(_call, contents, config))
 
         final_text = ""
         tool_calls = []
@@ -547,7 +565,7 @@ async def _call_google_with_tools(
 
         # Build function response parts
         # First, add the model's response to contents
-        model_parts = []
+        model_parts: list[types.Part] = []
         for candidate in (response.candidates or []):
             model_parts.extend(candidate.content.parts or [])
         contents.append(types.Content(parts=model_parts, role="model"))
@@ -686,8 +704,8 @@ async def _coding_agent_generate(
         logger.warning("Unknown provider '%s' for coding session, no tools", provider)
         return await agent._generate_response([])
 
-    except Exception as e:
-        logger.error("[%s] Coding session generation error: %s", agent._name, e, exc_info=True)
+    except Exception:
+        logger.exception('[%s] Coding session generation error: see traceback', agent._name)
         raise
 
 
@@ -711,7 +729,7 @@ async def _run_coding_agent(
         while True:
             try:
                 envelope = await asyncio.wait_for(agent._queue.get(), timeout=2.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
 
             sender_uri = (
@@ -781,12 +799,12 @@ async def _handle_coding_grant(
             envelope = agent._make_utterance_envelope(response_text)
             await agent.send_envelope(envelope)
             agent._consecutive_errors = 0
-    except asyncio.TimeoutError:
+    except TimeoutError:
         agent._consecutive_errors += 1
         logger.warning("[%s] coding response timed out", agent._name)
-    except Exception as e:
+    except Exception:
         agent._consecutive_errors += 1
-        logger.error("[%s] coding error: %s", agent._name, e, exc_info=True)
+        logger.exception('[%s] coding error: see traceback', agent._name)
     finally:
         agent._has_floor = False
         await agent.yield_floor()
@@ -802,7 +820,8 @@ async def run_coding_session(
     required_context_files: list[str] | None = None,
     initial_todo_items: list[str] | None = None,
     parent_renderer=None,
-    trace_collector: "EventCollector | None" = None,
+    trace_collector: EventCollector | None = None,
+    status_runtime: SessionStatusRuntime | None = None,
 ) -> CodingSessionResult:
     """Run a full coding session and return a CodingSessionResult.
 
@@ -858,10 +877,10 @@ async def run_coding_session(
         )
 
     if parent_renderer:
-        agent_names = ", ".join(a.name for a in agents)
+        agent_labels = ", ".join(a.name for a in agents)
         parent_renderer.show_system_event(
             f"[CodingSession] Starting: {topic[:60]} | policy={policy.value} | "
-            f"agents=[{agent_names}] | max_rounds={max_rounds} | "
+            f"agents=[{agent_labels}] | max_rounds={max_rounds} | "
             f"context_files={len(session_mgr.required_context_files)} | sandbox={sandbox_dir}"
         )
 
@@ -886,24 +905,27 @@ async def run_coding_session(
             agent.set_name_registry(name_registry)
 
     # Start agent loops with tool injection
+    child_status = status_runtime.child(session_mgr.conversation_id) if status_runtime else None
+    if child_status:
+        session_mgr._status_callback = child_status.floor_transition
+        for agent in agents:
+            child_status.track(agent)
     agent_tasks = [
         asyncio.create_task(
-            _run_coding_agent(
-                agent,
-                session_mgr.sandbox_dir,
-                session_mgr.todo,
-                session_mgr.required_context_files,
-            )
+            child_status.run_agent(agent, partial(_run_coding_agent, agent, session_mgr.sandbox_dir,
+                                                  session_mgr.todo, session_mgr.required_context_files))
+            if child_status else _run_coding_agent(agent, session_mgr.sandbox_dir,
+                                                   session_mgr.todo, session_mgr.required_context_files)
         )
         for agent in agents
     ]
 
     try:
-        history = await asyncio.wait_for(
+        history = await _await_child_floor(
             session_mgr.run_to_completion(topic),
-            timeout=1800.0,  # 30-minute hard timeout
+            agent_tasks, timeout=1800.0,  # 30-minute hard timeout
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("Coding session hard timeout after 1800s")
         history = session_mgr._history.all()
     finally:

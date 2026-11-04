@@ -178,6 +178,7 @@ class TestSave:
         s.floor.policy = "moderated"
         s.floor.max_agents = 7
         s.api_keys.anthropic = "sk-ant-saved"
+        s.defaults.llm_model_huggingface = "example/custom-model"
         s.save()
 
         monkeypatch.setattr("ofp_playground.config.settings.CONFIG_FILE", config_file)
@@ -185,6 +186,7 @@ class TestSave:
         assert s2.floor.policy == "moderated"
         assert s2.floor.max_agents == 7
         assert s2.api_keys.anthropic == "sk-ant-saved"
+        assert s2.defaults.llm_model_huggingface == "example/custom-model"
 
     def test_save_omits_none_api_keys(self, tmp_path, monkeypatch):
         config_file = tmp_path / "config.toml"

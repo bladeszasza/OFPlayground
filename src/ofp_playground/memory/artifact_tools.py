@@ -63,7 +63,7 @@ def build_artifact_tools() -> list[dict]:
 def execute_artifact_tool(
     tool_name: str,
     args: dict,
-    artifact_store: "ArtifactStore",
+    artifact_store: ArtifactStore,
 ) -> str:
     """Execute an artifact tool call and return a plain-text result.
 

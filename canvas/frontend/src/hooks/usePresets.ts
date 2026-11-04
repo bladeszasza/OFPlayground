@@ -1,3 +1,4 @@
+import { apiFetch } from '../api'
 import { useEffect, useState } from 'react'
 
 export interface PresetEntry {
@@ -10,7 +11,7 @@ export interface PresetEntry {
 export function usePresets(): PresetEntry[] {
   const [presets, setPresets] = useState<PresetEntry[]>([])
   useEffect(() => {
-    fetch('/presets/list')
+    apiFetch('/presets/list')
       .then(r => r.ok ? r.json() : [])
       .then((data: PresetEntry[]) => {
         setPresets(data.filter(p => !p.name.startsWith('_')))

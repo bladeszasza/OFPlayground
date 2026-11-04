@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 from ofp_playground.agents.llm.codex import BaseCodingAgent, save_code_blocks
 from ofp_playground.bus.message_bus import MessageBus
@@ -32,7 +31,7 @@ class AnthropicCodingAgent(BaseCodingAgent):
         bus: MessageBus,
         conversation_id: str,
         api_key: str,
-        model: Optional[str] = None,
+        model: str | None = None,
     ):
         super().__init__(
             name=name,

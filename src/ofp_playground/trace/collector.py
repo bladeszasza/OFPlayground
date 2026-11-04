@@ -5,6 +5,7 @@ import re
 import time
 import uuid
 from dataclasses import asdict
+from typing import Protocol
 
 from openfloor import Envelope
 
@@ -14,6 +15,26 @@ _DIRECTIVE_RE = re.compile(
     r"\[(ASSIGN(?:_PARALLEL)?|ACCEPT|REJECT|KICK|SPAWN|TASK_COMPLETE|BREAKOUT(?:_AGENT)?)",
     flags=re.IGNORECASE,
 )
+
+
+class TraceCollector(Protocol):
+    """Collector contract also implemented by the Canvas streaming adapter."""
+
+    @property
+    def conversation_id(self) -> str: ...
+
+    def record(
+        self,
+        envelope: Envelope,
+        recipients: set[str],
+        is_private: bool,
+        breakout_id: str | None = None,
+        *,
+        scope_id: str | None = None,
+        scope_kind: str | None = None,
+        parent_conversation_id: str | None = None,
+        delivery_outcomes: dict[str, str] | None = None,
+    ) -> None: ...
 
 
 class EventCollector:
@@ -49,6 +70,7 @@ class EventCollector:
         scope_id: str | None = None,
         scope_kind: str | None = None,
         parent_conversation_id: str | None = None,
+        delivery_outcomes: dict[str, str] | None = None,
     ) -> None:
         sender_uri = envelope.sender.speakerUri if envelope.sender else "unknown"
         sender_name = self._name_for(sender_uri)
@@ -103,6 +125,7 @@ class EventCollector:
                     directive=directive,
                     media_type=media_type,
                     envelope_json=envelope_json,
+                    delivery_outcomes=dict(delivery_outcomes or {}),
                 )
             )
 

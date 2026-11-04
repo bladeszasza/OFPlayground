@@ -1,299 +1,215 @@
 # OFP Playground
 
-A model-agnostic, multi-provider sandbox for the [Open Floor Protocol](https://github.com/open-voice-interoperability/openfloor-python).
+A local playground for multi-agent conversations using [Open Floor Protocol](https://github.com/open-voice-interoperability/openfloor-python) envelopes and floor events. Combine Anthropic, OpenAI, Google, and Hugging Face agents, experiment with turn-taking, and inspect how conversations produce text, media, and code artifacts.
 
-The idea is straightforward: give multiple AI agents a shared floor, let them take turns following OFP rules, and see what happens when you hand one of them the conductor's baton. 
+The project includes a terminal CLI, a Gradio chat interface, and a React canvas backed by FastAPI. Creative workflows directed by an orchestrator are its most developed examples. General-purpose technical collaboration remains experimental.
 
----
+**Status: experimental local workbench.** The shared runtime, authenticated ASP service, separate status dock and observed communication graph are implemented. Release verification is tracked in the [implementation ledger](docs/implementation-status.md). The [assessment](docs/assessment-2026-10-31.md) explains the original defects and the project's direction.
 
-## What this is
+## What is implemented
 
-OFP Playground is a CLI tool that:
+- In-process asynchronous routing of OFP envelopes between human, LLM, and remote HTTP agents.
+- Five floor-policy modes, with the implementation distinctions described below.
+- Orchestrator assignment, output acceptance/revision, dynamic agent creation, breakout conversations, and shared coding sessions.
+- Provider-specific text, vision, media, and coding agents. Task support differs by provider.
+- A library of 200+ `SOUL.md` personas, including four [research and development experts](docs/expert-agents.md).
+- Session memory, persisted phase artifacts, and an interactive HTML event trace.
+- Canvas membership and observed transport layers, authoritative floor/queue observations, bounded timeline replay, filters, pinned layouts and artifact inspection.
+- A separate authenticated [ASP 0.1 status service](docs/asp.md), with five status dimensions, provenance, freshness, independent observations and locally enforced quarantine.
 
-- runs OFP-compliant multi-agent conversations in-process over async queues
-- lets you mix agents from any provider (Anthropic, OpenAI, Google, HuggingFace) in the same session
-- enforces structured turn-taking via OFP floor request / grant / yield mechanics
-- supports five floor policies that change *how* agents take turns
-- includes a showrunner-driven policy where one agent acts as a director, dynamically assigning tasks, accepting or rejecting output, and spawning new specialist agents on demand
+These describe the code in this checkout, not full conformance to every OFP version or current availability of every configured provider model.
 
-It's not a framework. It's a playground. We built it to explore what OFP can actually do when pushed past simple chat. The showcase is our answer.
+## Install from a source checkout
 
----
+Requirements: **Python 3.12+**, Git, and access to package registries. **Node.js and npm are needed to rebuild Canvas.** A prebuilt frontend is included. Use an editable install: persona files and Canvas assets live outside the Python package tree, so a standalone wheel is not a complete application distribution. The current verified local environment uses Python 3.12 and Node 24.
 
-## Installation
-
-```bash
-git clone https://github.com/bladeszasza/OFPlayground
+```sh
+git clone https://github.com/bladeszasza/OFPlayground.git
 cd OFPlayground
-pip install -e .
+python -m venv .venv
 ```
 
-**Python 3.10+** required.
+Activate the environment for your shell:
 
-**API keys** — create `.env` in the project root:
-
-```env
-ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-...
-GOOGLE_API_KEY=AIza...
-HF_API_KEY=hf_...
+```powershell
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
 ```
 
-Keys are also read from `~/.ofp-playground/config.toml` under `[api_keys]`. Only the providers you configure become available to orchestrators.
+```sh
+# macOS / Linux
+source .venv/bin/activate
+```
 
----
+Install the Python application and Canvas backend:
 
-## Quick Start
+```sh
+python -m pip install -e ".[canvas]"
+```
 
-`ofp-playground canvas`
+For Gradio, install `python -m pip install -e ".[web]"`. Gradio is optional because its current Pillow constraint prevents installing Pillow's security fixes; see [dependency review](docs/dependencies.md) before enabling media workflows. The CLI and Canvas do not require Gradio.
 
-or other options
+Development uses the committed `uv.lock`: install uv 0.13.6, then run `uv sync --locked --extra dev --extra canvas --extra web`. The OFP SDK is pinned to a tested commit. Python 3.12 and 3.13 are the CI targets; Node 22.12+ or 24 builds the frontend. This workbench is distributed as a source checkout: Canvas and the persona library use repository assets. A core wheel does not include those assets.
 
-```bash
-# Simple chat with one agent
-ofp-playground start --agent "anthropic:Claude:You are a helpful assistant."
+## Configure one provider
 
-# Rich Canvas interface 
+You can first explore without a provider account: run `ofp-playground canvas`, load **ASP showcase · no API keys**, and press **Run session**. All agents are explicitly synthetic and execute through the real session, floor and status paths. See the [showcase walkthrough](docs/asp.md#provider-free-showcase).
+
+Create `.env` in the repository root with the key for the provider you want. You do not need all four keys:
+
+```dotenv
+OPENAI_API_KEY=your-key
+# ANTHROPIC_API_KEY=your-key
+# GOOGLE_API_KEY=your-key
+# HF_API_KEY=your-key
+```
+
+Hugging Face also accepts `HF_TOKEN` as a fallback. The CLI group loads `.env` for `start`, `web`, and `canvas`, preserving variables already set in the process environment.
+
+| Interface | Configuration behavior in this revision |
+|---|---|
+| `start` / `web` | Load `~/.ofp-playground/config.toml`; configured TOML keys take precedence over environment keys. |
+| `canvas` | Uses the same TOML → environment/CLI-loaded `.env` → default precedence. |
+| Direct Python examples | May read only environment variables; inspect the example before assuming CLI configuration applies. |
+
+Model IDs in the code are configured defaults, not availability guarantees. Select an account-supported model with the agent specification's `-model` option when needed. Live sessions use your provider accounts and their billing.
+
+## First conversation
+
+These single-line commands work in PowerShell or a POSIX shell. They use OpenAI, matching the configuration example; substitute another supported provider if preferred.
+
+```sh
+# Interactive terminal conversation
+ofp-playground start --agent "openai:Assistant:Help the human with the topic."
+
+# Two agents with a topic and a turn-count stop condition
+ofp-playground start --no-human --policy round_robin --max-turns 8 --topic "Design a short story set in a floating city." --agent "openai:Writer:Propose the story." --agent "openai:Editor:Identify weaknesses and suggest revisions."
+
+# Local Gradio chat interface
+ofp-playground web --host 127.0.0.1 --agent "openai:Assistant:Help the human with the topic."
+```
+
+`--max-turns` polls conversation history. It is not a hard token, cost, or wall-clock budget. Early completion now joins and closes session tasks; cancelling a local wait cannot retract an already submitted provider job.
+
+## Build and open Canvas
+
+The checkout includes a built frontend. Rebuild it after changing frontend source:
+
+```sh
+cd canvas/frontend
+npm ci
+npm run build
+cd ../..
 ofp-playground canvas
-
-# Autonomous debate, no human
-ofp-playground start --no-human \
-  --policy round_robin \
-  --topic "Is remote work better than office work?" \
-  --max-turns 12 \
-  --agent "hf:Optimist:You believe remote work is superior." \
-  --agent "hf:Skeptic:You believe office work fosters better collaboration."
-
-# Gradio web UI
-ofp-playground web \
-  --agent "anthropic:Claude:You are a helpful assistant." \
-  --agent "google:text-to-image:Painter:impressionistic oil painting"
 ```
 
----
+Canvas is served at `http://localhost:8765`. Add participants, configure exactly one floor, and press Run. The backend supports one active session per app instance. Controls, media, trace and status endpoints require the local browser's HttpOnly session cookie or the app's bearer credential. The CLI accepts loopback hosts in this local profile; it does not provide multi-user isolation.
 
-## Floor Policies
+Personas resolve to full prompts for both initial and dynamically added agents. CLI prepopulation is also available:
 
-How agents take turns is controlled by policy. See [docs/floor-policies.md](docs/floor-policies.md) for the full breakdown.
+```sh
+ofp-playground canvas --agent "openai:Reviewer:@development/code-reviewer" --topic "Give technical feedback on the supplied proposal."
+```
 
-| Policy | Behaviour |
+The [expert panel guide](docs/expert-agents.md) includes a four-agent prepopulation command. Canvas add, remove and send controls report backend rejection; a requested new agent is added to the live graph after acknowledgement.
+
+`npm run dev` starts Vite with the same discovery, session, authentication, status, media and trace proxies. Use the served production bundle for the simplest setup.
+
+## Agents and orchestration
+
+Both agent specification formats are supported:
+
+```sh
+ofp-playground start --agent "openai:Reviewer:@development/code-reviewer"
+ofp-playground start --agent "-provider openai -name Reviewer -system @development/code-reviewer"
+```
+
+Append `-model MODEL_ID` within a flag-format specification to override the provider default. A persona supplies instructions; it does not grant browsing, local file access, or execution tools. Ordinary LLM prompts are task-neutral; creative behavior belongs in a creative persona or director/showrunner role.
+
+`ofp-playground agents` prints the provider/task reference. Search personas, preview their resolved instructions and inspect configured model choices:
+
+```sh
+ofp-playground personas reviewer --preview
+ofp-playground models --json
+ofp-playground status --watch
+```
+
+See [the persona library](docs/agents-library.md), [expert panel](docs/expert-agents.md), and [agent guide](docs/agents.md). Task-name parsing does not guarantee implementation by every provider. Hugging Face `code-generation` is currently unsupported.
+
+An orchestrator can assign work, request revisions, accept phase outputs, create agents, and launch sub-sessions:
+
+```sh
+ofp-playground start --no-human --policy showrunner_driven --topic "Write and revise a short story." --agent "-provider openai -type orchestrator -name Director -system Coordinate a writer and an editor, then finish the story."
+```
+
+The runtime offers tools based on configured key presence. That does not validate credentials or model entitlement. See [orchestration](docs/orchestration.md) for directives and artifact handling.
+
+## Floor policies
+
+These application policies sit above the OFP message layer. Their names describe intended modes; implementation details matter:
+
+| Policy | Current behavior |
 |---|---|
-| `sequential` | Agents take turns in join order |
-| `round_robin` | Strict rotation; every agent speaks every cycle |
-| `moderated` | Agents request the floor; moderator decides |
-| `free_for_all` | Anyone speaks at any time |
-| `showrunner_driven` | One orchestrator agent assigns tasks and controls flow |
+| `sequential` | Grants an idle floor to a requester, then services queued requests. |
+| `round_robin` | Uses rotation after queued requests; not an unconditional strict cycle. |
+| `moderated` | Supports explicit grants, but also auto-grants requests when idle. |
+| `free_for_all` | Grants requests immediately, allowing overlapping participation. |
+| `showrunner_driven` | Adds orchestrator assignments and accept/reject workflow. |
 
-```bash
-ofp-playground start --policy round_robin --agent ...
-```
+Only a holder can yield; free-for-all tracks concurrent holders. Removing a participant clears queue/rotation membership and transfers a departing holder's floor. Graceful removal excludes new work, drains the active call for up to the chosen timeout, then falls back to force cancellation. Quarantine removes and cancels the local instance; clearing its assertion does not restart it or repeat a provider call.
 
----
+## Examples and output
 
-## Agent Library
+The [examples directory](examples/) contains writing, media production, code review, and coding-session experiments. Shell scripts require Bash and often several provider keys. Inspect the chosen script's providers, models, and turn limit before running it.
 
-The `agents/` directory is a library of 200+ ready-to-use personas organised by domain. Each persona is a `SOUL.md` file — a structured system prompt encoding an agent's identity, principles, and output format.
-
-Reference any persona with the `@category/name` slug:
-
-```bash
-# Use a persona as the system prompt
---agent "anthropic:Alice:@development/code-reviewer"
---agent "-provider google -name Bob -system @creative/brand-designer"
-
-# List all available slugs
-ofp-playground agents
-```
-
-Categories: `automation`, `business`, `compliance`, `creative`, `customer-success`, `data`, `development`, `devops`, `ecommerce`, `education`, `finance`, `freelance`, `healthcare`, `hr`, `legal`, `marketing`, `personal`, `productivity`, `real-estate`, `saas`, `security`, `supply-chain`, `voice`.
-
-The `development/` category includes coding-aware personas with embedded TDD, debugging, and verification methodology — `@development/coding-agent` is auto-loaded by all coding agents when no system prompt is provided.
-
-See [docs/agents-library.md](docs/agents-library.md) for the full category breakdown, auto-loaded personas, and how to add new ones.
-
----
-
-## Agent Spec Formats
-
-Two formats, freely mixable. See [docs/cli.md](docs/cli.md) for full reference.
-
-```bash
-# Colon format: provider:name:description
---agent "anthropic:Claude:You are a helpful assistant."
---agent "hf:Bob:You are a skeptical physicist.:meta-llama/Llama-3.1-8B-Instruct"
-
-# With task subtype
---agent "openai:text-to-image:Artbot:cinematic concept art"
---agent "google:text-to-music:Composer:ambient cinematic score"
-
-# Flag format: -provider TYPE -name NAME [-type TASK] [-system DESC] [-model MODEL]
---agent "-provider anthropic -name Claude -system You are helpful."
---agent "-provider hf -type Text-to-Image -name Flux -system photorealistic -model black-forest-labs/FLUX.1-dev"
-```
-
----
-
-## Providers & Tasks
-
-Full table in [docs/agents.md](docs/agents.md).
-
-| Provider | Alias | Default model |
-|---|---|---|
-| Anthropic | `anthropic` / `claude` | `claude-haiku-4-5-20251001` |
-| OpenAI | `openai` / `gpt` | `gpt-5.4-nano` |
-| Google | `google` / `gemini` | `gemini-3.1-flash-lite` |
-| HuggingFace | `hf` / `huggingface` | `MiniMaxAI/MiniMax-M2.7` |
-
-Supported task types across providers: text generation, image generation, image-to-text (vision), text-to-music, text-to-video, code-generation (OpenAI/Anthropic/Google), classification, NER, summarization, orchestrator.
-
----
-
-## Examples
-
-Ready-made scripts in [`examples/`](examples/):
-
-| Script | What it does |
+| Example | Purpose |
 |---|---|
-| [`showcase.sh`](examples/showcase.sh) | Full illustrated story pipeline — 10 chapters, images, music, HTML (any topic) |
-| [`showcase_web.sh`](examples/showcase_web.sh) | Same pipeline via Gradio web UI |
-| [`example_platformer.sh`](examples/example_platformer.sh) | Procedural Three.js endless runner — 9-phase design + coding pipeline (Anthropic + OpenAI) |
-| [`example_song_production.sh`](examples/example_song_production.sh) | AI music production pipeline |
-| [`round_robin_novel.sh`](examples/round_robin_novel.sh) | Round-robin collaborative novel |
-| [`sequential_code_review.sh`](examples/sequential_code_review.sh) | Sequential code review pipeline |
-| [`breakout_code_review.sh`](examples/breakout_code_review.sh) | Code review using breakout sessions |
-| [`moderated_investment_committee.sh`](examples/moderated_investment_committee.sh) | Moderated investment committee |
-| [`free_for_all_brainstorm.sh`](examples/free_for_all_brainstorm.sh) | Free-for-all brainstorm |
-| [`simple_chat.py`](examples/simple_chat.py) | Minimal Python example |
+| [showcase.sh](examples/showcase.sh) | Multi-phase illustrated-story workflow using several providers |
+| [showcase_web.sh](examples/showcase_web.sh) | A separate showcase configuration through Gradio |
+| [example_platformer.sh](examples/example_platformer.sh) | Collaborative browser-game generation |
+| [example_song_production.sh](examples/example_song_production.sh) | Music-production workflow |
+| [round_robin_novel.sh](examples/round_robin_novel.sh) | Collaborative story experiment |
+| [breakout_code_review.sh](examples/breakout_code_review.sh) | Breakout review conversation |
+| [simple_chat.py](examples/simple_chat.py) | Direct Python example; reads its provider key from the environment |
 
----
+Results go under `result/<session>/`, including applicable media, code, phase artifacts, manuscript, memory snapshot, and `trace.html`. The trace records envelopes and routing decisions; it does not prove successful receipt or processing by every listed recipient. See [output structure](docs/output.md).
 
-## Remote OFP Agents
+Remote agents can be supplied through `start --remote ALIAS_OR_URL`. Registry aliases are configuration entries, not guarantees that endpoints are currently reachable or compatible.
 
-Connect any live OFP-compatible HTTP endpoint:
+## Development
 
-```bash
-ofp-playground start --no-human \
-  --topic "What do JWST observations reveal about galaxy formation?" \
-  --agent "hf:Alice:You are Alice." \
-  --remote arxiv \
-  --remote wikipedia
-
-# Or mid-conversation
-/spawn remote arxiv
-/spawn remote https://my-custom-agent.example.com/ofp
+```sh
+python -m pip install -e ".[dev,canvas]"
+python -m pytest -q
+python -m ruff check src/
+python -m mypy src/
 ```
 
-Known live agents: `polly`, `arxiv`, `github`, `sec`, `web-search`, `wikipedia`, `stella`, `verity`, `profanity`. Full registry at [openfloor.dev/agent-registry](https://openfloor.dev/agent-registry).
+Frontend validation: run `npm ci`, `npm test` and `npm run build` from `canvas/frontend`. The checked-in CI matrix covers Windows/Linux and Python 3.12/3.13, plus Node 22.12/24 frontend tests/build/audit. Local evidence and the distinction from remote CI are recorded in the [implementation ledger](docs/implementation-status.md).
 
----
-
-## Orchestrator (Showrunner-Driven)
-
-Any provider can act as orchestrator. It speaks first, assigns tasks, evaluates output, and spawns new agents on demand. See [docs/orchestration.md](docs/orchestration.md) for the full directive reference.
-
-| Directive | Action |
+| Area | Source |
 |---|---|
-| `[ASSIGN AgentName]: task` | Grant floor to the named agent with a task |
-| `[ACCEPT]` | Accept the last output into manuscript + artifact store |
-| `[REJECT AgentName]: reason` | Re-grant with revision feedback |
-| `[KICK AgentName]` | Remove an agent from the session |
-| `[SPAWN spec]` | Dynamically create a new specialist agent |
-| `[SKIP AgentName]: reason` | Record skip in manuscript, return floor to orchestrator |
-| `[BREAKOUT policy=… max_rounds=… topic=…]` | Spin up a temporary sub-floor session |
-| `[CODING_SESSION policy=… max_rounds=… topic=…]` | Launch a multi-agent coding sub-floor with file tools |
-| `[REMEMBER category]: content` | Write to in-session memory store |
-| `[TASK_COMPLETE]` | End the session |
+| Commands and agent construction | [`src/ofp_playground/cli.py`](src/ofp_playground/cli.py) |
+| Routing and scheduling | [`bus/`](src/ofp_playground/bus/), [`floor/`](src/ofp_playground/floor/) |
+| Agent implementations | [`agents/`](src/ofp_playground/agents/) |
+| Memory and artifacts | [`memory/`](src/ofp_playground/memory/) |
+| Event trace | [`trace/`](src/ofp_playground/trace/) |
+| Canvas | [`canvas/backend/`](canvas/backend/), [`canvas/frontend/src/`](canvas/frontend/src/) |
+| Regression tests | [`tests/`](tests/) |
 
-Agent spawning goes through **native tool calling** — the orchestrator calls typed tools (`spawn_text_agent`, `spawn_image_agent`, etc.) built from whatever API keys are actually present. It can't hallucinate a provider that isn't configured.
+## Current limitations
 
-```bash
-ofp-playground start \
-  --no-human \
-  --policy showrunner_driven \
-  --topic "Create a short illustrated story with 3 chapters." \
-  --agent "-provider anthropic -type orchestrator -name Director -model claude-sonnet-4-6 \
-           -system Create a short illustrated story with 3 chapters."
-```
+- Core scheduling/removal, early completion, ASP and failure scenarios have provider-free regression coverage. Live provider compatibility is opt-in.
+- Canvas edges describe membership or observed routes; they do not define an execution DAG. Backend replay retains 5,000 events and reports cursor gaps; the browser renders the last 1,000 observations. ASP has its own durable SQLite journal and independent cursors.
+- The message bus is local and in-memory, without durable delivery or application acknowledgments.
+- Canvas and the Gradio control interface are intended for loopback use. Windows media containment uses resolved path ancestry. Public multi-tenant deployment remains outside this release.
+- The SDK is pinned to commit `eab87464fde1c79c32ad6e51cf3161686daf8316`. The [dependency review](docs/dependencies.md) records the supported profile, audit and unresolved optional Gradio/Pillow security constraint.
+- Provider integrations and model metadata need live compatibility checks. Personas are not separately trained experts or security boundaries.
 
-The orchestrator starts alone and spawns whatever it needs.
+ASP implements the [pinned local profile](docs/protocols/asp/PROFILE.md) of a draft protocol. It reports observations; it cannot automatically detect compromise. Uninstrumented remote agents remain unknown. A local cancellation cannot retract an already submitted provider job.
 
----
+## Documentation and license
 
-## In-Conversation Commands
+Start with the [documentation index](docs/README.md). Some reference pages predate current implementation; the index identifies important discrepancies.
 
-| Command | Description |
-|---|---|
-| `/help` | Show all commands |
-| `/agents` | List active agents and floor holder |
-| `/floor` | Show floor holder and queue |
-| `/history [N]` | Last N utterances |
-| `/spawn <spec>` | Add an agent mid-conversation |
-| `/kick <name>` | Remove an agent |
-| `/quit` | End the session |
-
----
-
-## Documentation
-
-| Doc | Contents |
-|---|---|
-| [docs/architecture.md](docs/architecture.md) | Message bus, FloorManager, agent hierarchy |
-| [docs/ofp-protocol.md](docs/ofp-protocol.md) | OFP event types and how they're used |
-| [docs/agents.md](docs/agents.md) | All agent types, tasks, and default models |
-| [docs/agents-library.md](docs/agents-library.md) | `agents/` SOUL.md persona library — all 200+ slugs, @slug usage, how to add new personas |
-| [docs/orchestration.md](docs/orchestration.md) | Showrunner directives, breakout sessions, manuscript |
-| [docs/floor-policies.md](docs/floor-policies.md) | All five floor policies explained |
-| [docs/cli.md](docs/cli.md) | Full CLI reference |
-| [docs/configuration.md](docs/configuration.md) | API keys, config file, env vars |
-| [docs/output.md](docs/output.md) | Session output layout (`result/`, media dirs) |
-
----
-
-## Project Structure
-
-```
-src/ofp_playground/
-├── cli.py                      # Click CLI (start, web, agents, validate)
-├── bus/message_bus.py          # Async in-process OFP message bus
-├── floor/
-│   ├── manager.py              # FloorManager: OFP coordinator
-│   ├── policy.py               # Five floor policies
-│   ├── history.py              # Conversation history
-│   ├── coding_session.py       # Multi-agent coding sub-floor (shared sandbox + file tools)
-│   └── coding_session_tools.py # File tools injected into coding agents (read/write/edit/todo)
-├── memory/
-│   ├── store.py                # Ephemeral MemoryStore (goals, tasks, decisions, lessons…)
-│   └── artifact_store.py       # Phase ArtifactStore (persisted to result/<session>/phases/)
-├── trace/
-│   ├── collector.py            # EventCollector — records every routed envelope
-│   ├── model.py                # TraceEvent frozen dataclass
-│   └── renderer.py             # D3-based interactive HTML timeline (trace.html)
-├── agents/
-│   ├── base.py                 # BasePlaygroundAgent
-│   ├── human.py                # Human stdin/stdout agent
-│   ├── web_human.py            # Human agent for Gradio
-│   ├── remote.py               # Remote OFP agent via HTTP
-│   └── llm/
-│       ├── base.py             # BaseLLMAgent
-│       ├── anthropic.py        # Anthropic Claude (text)
-│       ├── openai.py           # OpenAI GPT (text + image)
-│       ├── google.py           # Google Gemini (text + image + music)
-│       ├── huggingface.py      # HuggingFace (text + image + video + perception)
-│       ├── codex.py            # BaseCodingAgent + OpenAICodingAgent (code_interpreter)
-│       ├── anthropic_coding.py # AnthropicCodingAgent (code_execution_20250825 beta)
-│       ├── google_coding.py    # GoogleCodingAgent (ToolCodeExecution)
-│       ├── model_catalog.py    # ModelCaps + MODEL_CATALOG for 9 models (drives manifests)
-│       └── showrunner.py       # Orchestrator agents (all providers)
-└── renderer/
-    ├── terminal.py             # Rich terminal output
-    └── gradio_ui.py            # Gradio web UI
-agents/                         # SOUL.md persona library (@slug syntax)
-examples/                       # Ready-to-run scripts
-docs/                           # Architecture and reference docs
-```
-
----
-
-## License
-
-Apache-2.0
+Licensed under [Apache-2.0](LICENSE).

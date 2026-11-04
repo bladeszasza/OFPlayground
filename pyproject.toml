@@ -1,28 +1,26 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "ofplayground"
-version = "0.1.0"
+version = "0.3.0"
 description = "CLI tool for Open Floor Protocol multi-agent conversations"
-authors = [{ name = "BladeSzaSza" }]
+authors = [{ name = "Bolyos Csaba", email = "bladeszasza@gmail.com" }]
 readme = "README.md"
-license = { text = "Apache-2.0" }
-requires-python = ">=3.10"
+license = "Apache-2.0"
+requires-python = ">=3.12"
 dependencies = [
-    "openfloor @ git+https://github.com/open-voice-interoperability/openfloor-python.git",
+    "openfloor @ git+https://github.com/open-voice-interoperability/openfloor-python.git@eab87464fde1c79c32ad6e51cf3161686daf8316",
     "click>=8.0",
     "rich>=13.0",
     "httpx>=0.24",
     "anthropic>=0.40",
     "openai>=1.0",
     "google-genai>=1.0",
-    "tomli>=2.0; python_version < '3.11'",
     "tomli-w>=1.0",
     "pydantic>=2.0",
     "huggingface_hub>=0.23",
-    "gradio>=6.10",
 ]
 
 [project.urls]
@@ -30,6 +28,13 @@ Homepage = "https://github.com/bladeszasza/OFPlayground"
 Repository = "https://github.com/bladeszasza/OFPlayground"
 
 [project.optional-dependencies]
+status = [
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
+]
+web = [
+    "gradio>=6.31,<7",
+]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
@@ -44,13 +49,24 @@ canvas = [
 
 [project.scripts]
 ofp-playground = "ofp_playground.cli:main"
+ofp-status-server = "ofp_playground.status.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py312"
+
+[tool.mypy]
+check_untyped_defs = true
+
+# The pinned SDK does not ship a py.typed marker. Keep this exception scoped to
+# that external dependency; protocol constructors/serialization have runtime tests.
+[[tool.mypy.overrides]]
+module = ["openfloor", "openfloor.*"]
+ignore_missing_imports = true

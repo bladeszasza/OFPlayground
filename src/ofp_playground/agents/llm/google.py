@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from ofp_playground.agents.llm.base import BaseLLMAgent
 from ofp_playground.bus.message_bus import MessageBus
@@ -14,6 +13,8 @@ DEFAULT_MODEL = "gemini-3.1-flash-lite"
 
 class GoogleAgent(BaseLLMAgent):
     """LLM agent powered by Google Gemini."""
+
+    _model: str
 
     def __init__(
         self,
@@ -37,6 +38,7 @@ class GoogleAgent(BaseLLMAgent):
 
     async def _quick_check(self, prompt: str) -> str:
         import asyncio
+
         from google import genai
         loop = asyncio.get_event_loop()
 
@@ -50,8 +52,9 @@ class GoogleAgent(BaseLLMAgent):
 
         return await loop.run_in_executor(None, _call)
 
-    async def _generate_response(self, participants: list[str]) -> Optional[str]:
+    async def _generate_response(self, participants: list[str]) -> str | None:
         import asyncio
+
         from google import genai
         loop = asyncio.get_event_loop()
         system = self._build_system_prompt(participants)

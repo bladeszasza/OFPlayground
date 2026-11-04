@@ -6,6 +6,10 @@ __pycache__/
 *.egg
 *.egg-info/
 dist/
+# Canvas ships a prebuilt UI for the checkout quick start.
+!canvas/frontend/dist/
+!canvas/frontend/dist/**
+node_modules/
 build/
 .eggs/
 .Python
