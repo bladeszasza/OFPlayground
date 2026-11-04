@@ -43,7 +43,7 @@ ofp-playground agents    # list all available slugs
 | Category | Agents | Example slugs |
 |----------|-------:|---------------|
 | `marketing` | 28 | `@marketing/seo-writer`, `@marketing/newsletter`, `@marketing/social-media` |
-| `development` | 22 | `@development/coding-agent`, `@development/code-reviewer`, `@development/bug-hunter` |
+| `development` | 32 | `@development/coding-agent`, `@development/code-reviewer`, `@development/bug-hunter` |
 | `business` | 14 | `@business/sales-assistant`, `@business/customer-support`, `@business/radar` |
 | `creative` | 13 | `@creative/brand-designer`, `@creative/copywriter`, `@creative/storyboard-writer` |
 | `finance` | 10 | `@finance/trading-bot`, `@finance/fraud-detector`, `@finance/tax-preparer` |
@@ -82,6 +82,10 @@ The `development/` category contains personas with embedded software engineering
 | `@development/test-writer` | — | TDD core; red-green-refactor steps; test quality checklist |
 | `@development/qa-tester` | — | Verification before completion; 5-step gate; evidence before assertions |
 | `@development/pr-merger` | — | Branch completion options; git worktrees guide; safety rules |
+
+## OFPlayground Research Experts
+
+Four development personas cover Open Floor Protocol, this repository, multi-agent communication, and emergent communication. See the [expert panel guide](expert-agents.md) for their slugs, research sources, CLI/Canvas launch commands, and runtime limitations. The [July 2026 Hugging Face brief](research/hugging-face-2026-communication.md) explains the incident evidence behind the emergent-communication persona.
 
 ## Writing a New Persona
 
