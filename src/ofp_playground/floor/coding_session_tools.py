@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
@@ -371,7 +371,9 @@ def _safe_resolve(sandbox_dir: Path, rel_path: str) -> Path:
     - ``..`` components that would escape the sandbox
     - symlinks whose target is outside the sandbox
     """
-    if os.path.isabs(rel_path):
+    # Reject rooted and drive-relative Windows paths on every host as well.
+    # Python 3.13's Windows isabs() excludes single-slash rooted paths.
+    if Path(rel_path).anchor or PureWindowsPath(rel_path).anchor:
         raise ValueError(f"Absolute paths are not allowed: {rel_path}")
 
     # Normalise and reject explicit parent traversal
@@ -383,7 +385,7 @@ def _safe_resolve(sandbox_dir: Path, rel_path: str) -> Path:
     sandbox_resolved = sandbox_dir.resolve()
 
     # Final containment check (catches tricky symlink chains)
-    if not str(resolved).startswith(str(sandbox_resolved)):
+    if not resolved.is_relative_to(sandbox_resolved):
         raise ValueError(f"Path escapes sandbox: {rel_path}")
 
     return resolved

@@ -79,9 +79,13 @@ class TestSafeResolve:
         resolved = _safe_resolve(tmp_path, "js/main.js")
         assert resolved == (tmp_path / "js" / "main.js").resolve()
 
-    def test_absolute_path_rejected(self, tmp_path):
+    @pytest.mark.parametrize("path", [
+        "/etc/passwd", r"\etc\passwd", r"C:\etc\passwd", "C:passwd",
+        r"\\server\share\passwd",
+    ])
+    def test_absolute_path_rejected(self, tmp_path, path):
         with pytest.raises(ValueError, match="Absolute"):
-            _safe_resolve(tmp_path, "/etc/passwd")
+            _safe_resolve(tmp_path, path)
 
     def test_parent_traversal_rejected(self, tmp_path):
         with pytest.raises(ValueError, match="traversal"):

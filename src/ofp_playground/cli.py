@@ -1441,15 +1441,14 @@ async def _attach_floor_callbacks(
 @click.pass_context
 def main(ctx: click.Context, verbose: bool):
     """OFP Playground — Multi-party OFP conversation tool."""
-    # Windows uses a legacy code page for redirected streams. Runtime labels
-    # include Unicode; keep pipes usable without changing an interactive console.
-    if sys.platform == "win32":
-        for stream in (sys.stdout, sys.stderr):
-            if not stream.isatty() and hasattr(stream, "reconfigure"):
-                if os.environ.get("PYTHONIOENCODING"):
-                    stream.reconfigure(errors="backslashreplace")
-                else:
-                    stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    # Redirected streams may use a legacy encoding on any platform. Preserve
+    # explicit encoding choices, escaping Unicode labels that cannot be encoded.
+    for stream in (sys.stdout, sys.stderr):
+        if not stream.isatty() and hasattr(stream, "reconfigure"):
+            if sys.platform == "win32" and not os.environ.get("PYTHONIOENCODING"):
+                stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+            else:
+                stream.reconfigure(errors="backslashreplace")
     _load_dotenv()
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
