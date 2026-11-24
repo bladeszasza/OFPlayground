@@ -1528,6 +1528,59 @@ def status(watch: bool, as_json: bool, agent: str | None, interval: float, count
         pass
 
 
+_GOVERNANCE_CHOICES = ("normal", "policy-violation", "quarantined", "sandboxed", "under-review")
+
+
+@main.command("governance")
+@click.argument("agent_id", required=False)
+@click.argument("state", required=False, type=click.Choice(_GOVERNANCE_CHOICES))
+@click.option("--server", help="Shared ASP status server base URL (default: ASP_SERVER).")
+@click.option("--json", "as_json", is_flag=True, help="Print the agent list (or the changed agent) as JSON.")
+def governance(agent_id: str | None, state: str | None, server: str | None, as_json: bool) -> None:
+    """List agents on a shared ASP server, or set one agent's governance as an operator.
+
+    \b
+    ofp-playground governance --server URL                      list agents
+    ofp-playground governance --server URL AGENT_ID quarantined  quarantine one agent
+    ofp-playground governance --server URL AGENT_ID normal       release it
+
+    The bearer token comes from ASP_TOKEN (environment or .env), never from the
+    command line. Change only agents you run: on a shared server everyone can
+    see and change agent state. Reporting governance does not enforce it.
+    """
+    from ofp_playground.status.remote import (
+        RemoteStatusError,
+        RemoteStatusServer,
+        resolve_server,
+        resolve_token,
+    )
+
+    if agent_id is not None and state is None:
+        raise click.UsageError("Give the new state after the agent id: " + ", ".join(_GOVERNANCE_CHOICES))
+    try:
+        with RemoteStatusServer(resolve_server(server), resolve_token()) as remote:
+            if agent_id is None:
+                agents = remote.agents()
+                if as_json:
+                    click.echo(json.dumps(agents, ensure_ascii=True))
+                    return
+                if not agents:
+                    click.echo("No agents on the server.")
+                for entry in agents:
+                    click.echo(f"{entry.get('agentId')}  ({entry.get('name', '')})")
+                    click.echo(f"    lifecycle {entry.get('lifecycle')}, health {entry.get('health')}, "
+                               f"governance {entry.get('governance')} (set by {entry.get('governanceSetBy', 'unknown')})")
+                return
+            assert state is not None
+            after = remote.set_governance(agent_id, state)
+    except RemoteStatusError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if as_json:
+        click.echo(json.dumps(after, ensure_ascii=True))
+    else:
+        click.echo(f"{agent_id} is {after.get('governance')} (set by {after.get('governanceSetBy', 'operator')}).")
+
+
 def _print_personas(search: str, as_json: bool, preview: bool) -> None:
     from ofp_playground.agents import library
 
@@ -2023,8 +2076,8 @@ def agents():
         "                             -type defaults to Text-Generation\n"
         "\n"
         "  [bold]Anthropic generative tasks (-type):[/bold]\n"
-        "    Text-Generation          — chat/text LLM (default: claude-haiku-4-5-20251001)\n"
-        "    Image-to-Text            — analyze images via Claude vision (default: claude-haiku-4-5-20251001)\n"
+        "    Text-Generation          — chat/text LLM (default: claude-haiku-5-5)\n"
+        "    Image-to-Text            — analyze images via Claude vision (default: claude-haiku-5-5)\n"
         "\n"
         "  [bold]OpenAI generative tasks (-type):[/bold]\n"
         "    Text-Generation          — chat/text LLM (default: gpt-5.4-nano)\n"

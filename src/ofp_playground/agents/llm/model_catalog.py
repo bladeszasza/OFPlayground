@@ -59,6 +59,14 @@ MODEL_CATALOG: dict[str, ModelCaps] = {
         tools=(),
         context_window=200_000,
     ),
+    # Current Haiku: adaptive thinking on by default, 1M context, 128K output.
+    "claude-haiku-5-5": ModelCaps(
+        modalities_in=("text", "image"),
+        modalities_out=("text",),
+        features=("streaming", "function-calling", "structured-outputs", "extended-thinking"),
+        tools=("code-execution", "computer-use"),
+        context_window=1_000_000,
+    ),
     # --- Google ---
     "gemini-3.1-pro-preview": ModelCaps(
         modalities_in=("text", "image", "video", "audio"),

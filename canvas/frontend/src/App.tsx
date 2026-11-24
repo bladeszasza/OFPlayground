@@ -703,7 +703,14 @@ export default function App() {
         patchNode<FloorNodeData>(FLOOR_ID, { sessionState: 'stopped' })
         patchNode<ConversationNodeData>(CONV_ID, { sessionId: null })
         patchNode<ConversationNodeData>(TIMELINE_ID, { sessionId: null })
-        // Keep chat messages after session ends so user can read them
+        // Keep chat messages after session ends so user can read them, but nobody
+        // holds or wants the floor any more; errors stay visible.
+        setNodes((nds) => nds.map((n) => {
+          if (n.type !== 'AgentNode') return n
+          const state = asAgent(n.data).floorState
+          return state === 'speaking' || state === 'requesting' || state === 'yielding'
+            ? { ...n, data: { ...n.data, floorState: 'waiting' as AgentFloorState } } : n
+        }))
         setEdges((eds) => eds.map((e) => ({ ...e, data: { ...asGlowEdge(e.data), active: false } })))
         if (elapsedTimer.current) clearInterval(elapsedTimer.current)
         break
@@ -978,7 +985,9 @@ export default function App() {
     const historicalMessages: Message[] = activity.cursor === null ? [] : activity.visible.flatMap(({ id, observedAt, event }) =>
       event.type === 'utterance' ? [{ id: `replay-${id}`, sender: event.sender, text: event.text,
         ts: observedAt, media: event.media }] : [])
-    const floor = activity.floor
+    // A stopped session sends no final snapshot, so its last one would keep the
+    // final speaker "holding" the floor. Live view uses snapshots only while running.
+    const floor = activity.cursor !== null || isRunning ? activity.floor : null
     return nodes.map(node => {
       const detail = ['ConversationNode', 'TraceTimelineNode', 'EventInspectorNode', 'ConversationChatNode'].includes(node.type ?? '')
       let data = node.data
@@ -998,7 +1007,7 @@ export default function App() {
       return { ...node, data, hidden: detail && !showDetails,
         style: { ...node.style, ...(activity.focus && node.type === 'AgentNode' && asAgent(data).name !== activity.focus ? { opacity: .42 } : { opacity: 1 }) } }
     })
-  }, [nodes, activity.visible, activity.cursor, activity.floor, activity.focus, showDetails])
+  }, [nodes, activity.visible, activity.cursor, activity.floor, activity.focus, showDetails, isRunning])
 
   const presentationEdges = useMemo(() => {
     const lookup = new Map<string, string>()

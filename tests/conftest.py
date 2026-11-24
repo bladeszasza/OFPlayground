@@ -25,8 +25,13 @@ from ofp_playground.models.artifact import Utterance
 
 @pytest.fixture(autouse=True)
 def isolate_background_status(monkeypatch):
-    """Unit sessions do not launch persistent services; ASP tests inject/connect explicitly."""
+    """Unit sessions do not launch persistent services; ASP tests inject/connect explicitly.
+
+    The CLI entry point loads the developer's ``.env``; tests must not pick up
+    real keys or shared servers from it (or leak them into later tests).
+    """
     monkeypatch.setenv("OFP_STATUS_DISABLED", "1")
+    monkeypatch.setattr("ofp_playground.cli._load_dotenv", lambda: None)
 
 class ConcreteAgent(BasePlaygroundAgent):
     """Minimal subclass that satisfies the abstract run() requirement."""

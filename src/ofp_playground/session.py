@@ -186,6 +186,10 @@ class SessionService:
         except (httpx.HTTPError, RuntimeError, OSError, ValueError):
             self.status_problem = "Status service unavailable; agent status is unknown"
             return
+        if connection.mirror is None:
+            # Opt-in copy to a shared ASP server (OFP_ASP_MIRROR=1 + ASP_SERVER/ASP_TOKEN).
+            from ofp_playground.status.remote import mirror_from_env
+            connection.mirror = mirror_from_env()
         self.status = SessionStatusRuntime(connection, self.floor.conversation_id)
         self.registry.status_runtime = self.status
         self.floor._status_callback = self.status.floor_transition

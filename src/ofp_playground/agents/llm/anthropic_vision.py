@@ -12,13 +12,14 @@ from pathlib import Path
 
 from openfloor import Capability, Envelope, Identification, Manifest, SupportedLayers
 
+from ofp_playground.agents.llm.anthropic_compat import response_text
 from ofp_playground.agents.llm.base import BaseLLMAgent
 from ofp_playground.agents.llm.google_image import _sniff_mime
 from ofp_playground.bus.message_bus import MessageBus
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_VISION_MODEL = "claude-haiku-4-5-20251001"
+DEFAULT_VISION_MODEL = "claude-haiku-5-5"
 ANTHROPIC_VISION_URI_TEMPLATE = "tag:ofp-playground.local,2025:avision-{name}"
 
 
@@ -131,7 +132,7 @@ class AnthropicVisionAgent(BaseLLMAgent):
         def _call():
             response = client.messages.create(
                 model=self._model,
-                max_tokens=500,
+                max_tokens=2000,  # room for adaptive thinking plus the description
                 system=system,
                 messages=[{
                     "role": "user",
@@ -148,7 +149,7 @@ class AnthropicVisionAgent(BaseLLMAgent):
                     ],
                 }],
             )
-            return response.content[0].text if response.content else None
+            return response_text(response) or None
 
         return await loop.run_in_executor(None, _call)
 

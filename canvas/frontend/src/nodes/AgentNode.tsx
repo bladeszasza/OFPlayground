@@ -121,11 +121,12 @@ export function AgentNode({ data }: { data: AgentNodeData }) {
     >
       <Handle type="target" position={Position.Left} style={{ background: providerColor }} />
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+      {/* Header: badges, name (truncates), status pill and remove control share one row. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
         <span style={{
           background: `${providerColor}22`, color: providerColor,
           borderRadius: 4, padding: '1px 6px', fontSize: 10, fontWeight: 700,
-          textTransform: 'uppercase',
+          textTransform: 'uppercase', flexShrink: 0,
         }}>
           {data.provider}
         </span>
@@ -133,17 +134,21 @@ export function AgentNode({ data }: { data: AgentNodeData }) {
           <span style={{
             background: `${typeColor}22`, color: typeColor,
             borderRadius: 4, padding: '1px 6px', fontSize: 9, fontWeight: 700,
-            textTransform: 'uppercase',
+            textTransform: 'uppercase', flexShrink: 0, whiteSpace: 'nowrap',
           }}>
             {data.agentType.replace('-', ' ')}
           </span>
         )}
-        <span style={{ fontWeight: 700, fontSize: 13, flex: 1 }}>{data.name}</span>
+        <span title={data.name} style={{
+          fontWeight: 700, fontSize: 13, flex: 1, minWidth: 0,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>{data.name}</span>
         <span style={{
           fontSize: 10, background: `${stateColor}33`, color: stateColor,
           borderRadius: 4, padding: '2px 7px', fontWeight: 600,
           border: `1px solid ${stateColor}55`,
           display: 'flex', alignItems: 'center', gap: 3,
+          flexShrink: 0, whiteSpace: 'nowrap',
         }}>
           {isSpeaking && (
             <span style={{ display: 'inline-flex', gap: 2 }}>
@@ -158,6 +163,27 @@ export function AgentNode({ data }: { data: AgentNodeData }) {
           )}
           {STATE_LABEL[data.floorState]}
         </span>
+        <button className="nodrag nopan"
+          disabled={removing}
+          title={removing ? 'Removing…' : 'Remove'}
+          aria-label={`Remove ${data.name}${sessionRunning ? ' from session' : ' from configuration'}`}
+          onClick={async () => {
+            setRemoving(true)
+            setError('')
+            try { await onKick(data.name) }
+            catch (err) { setError(String(err)) }
+            finally { setRemoving(false) }
+          }}
+          style={{
+            flexShrink: 0, width: 20, height: 20, padding: 0, lineHeight: '18px',
+            background: hovered ? '#6b2121' : 'transparent', color: '#fc8181',
+            border: `1px solid ${hovered ? '#fc818188' : '#fc818144'}`,
+            borderRadius: 4, fontSize: 12, cursor: removing ? 'wait' : 'pointer',
+            transition: 'background 0.15s, border-color 0.15s',
+          }}
+        >
+          {removing ? '…' : '✕'}
+        </button>
       </div>
 
       {data.model && (
@@ -231,27 +257,6 @@ export function AgentNode({ data }: { data: AgentNodeData }) {
       )}
 
       {error && <div role="alert" style={{ color: '#fc8181' }}>{error}</div>}
-      <div style={{ opacity: hovered ? 1 : 0.85 }}>
-        <button className="nodrag nopan"
-          disabled={removing}
-          aria-label={`Remove ${data.name}${sessionRunning ? ' from session' : ' from configuration'}`}
-          onClick={async () => {
-            setRemoving(true)
-            setError('')
-            try { await onKick(data.name) }
-            catch (err) { setError(String(err)) }
-            finally { setRemoving(false) }
-          }}
-          style={{
-            position: 'absolute', top: 8, right: 8,
-            background: '#6b2121', color: '#fc8181',
-            border: '1px solid #fc818166',
-            borderRadius: 4, fontSize: 10, padding: '2px 6px', cursor: 'pointer',
-          }}
-        >
-          {removing ? 'Removing…' : 'Remove'}
-        </button>
-      </div>
     </div>
   )
 }

@@ -41,6 +41,8 @@ cd canvas/frontend && npm install && npm run build
 
 Session flags shared by `start`, `web` and `canvas` (canvas uses them to pre-populate the graph): `--policy`, `--agent` (repeatable), `--remote` (remote agent slug/URL, repeatable), `--topic`, `--no-human` (fully autonomous sessions), `--max-turns`, `--human-name` (display name for the human participant), `--show-floor-events` (show grantFloor/revokeFloor/requestFloor events; hidden by default). `start`/`web` also take `-v`/`--verbose`. Keep the three surfaces in parity. [`docs/interfaces.md`](docs/interfaces.md) maps every option and runtime control across CLI/web/canvas, and `TestSurfaceParity` in `tests/test_floor_delegation.py` guards it.
 
+Canvas browser tests in `tests/e2e/` are opt-in (`OFP_E2E=1`, `--extra e2e`; `OFP_E2E_LIVE=1` adds paid Haiku calls and the third-party Verity remote). They use an installed Edge/Chrome and write screenshots + `trace.zip` to `result/ui-tests/<test>/`.
+
 Tests use `async def` without `@pytest.mark.asyncio` — `asyncio_mode = "auto"` is set in `pyproject.toml`. Ruff enforces `line-length = 100`, `target-version = "py312"`. CI runs the locked mypy/ruff on Python 3.12 and 3.13 (`.github/workflows/checks.yml`: pytest, `ruff check src/ canvas/backend`, `mypy src/ canvas/backend`, `scripts/check_docs.py`); run them from the `uv sync --locked` environment. Unlocked tool installs report spurious import errors. Avoid comments that begin with `type:`, because mypy reads them as type comments.
 
 ## Architecture
@@ -97,7 +99,7 @@ All agents extend [`BasePlaygroundAgent`](src/ofp_playground/agents/base.py) whi
 - `_call_with_retry()` — timeout + exponential backoff (handles 429s, 5xx, timeouts; non-retryable errors are raised immediately)
 - `_build_manifest()` / `_publish_manifest()` for OFP capability advertisement
 
-`BaseLLMAgent._build_manifest()` uses [`model_catalog.py`](src/ofp_playground/agents/llm/model_catalog.py) (`ModelCaps` frozen dataclass) to publish rich OFP manifests (modalities + features + tools keyphrases) for 9 known models (3 OpenAI, 3 Anthropic, 3 Google). Unknown models fall back to a minimal text-in/text-out manifest.
+`BaseLLMAgent._build_manifest()` uses [`model_catalog.py`](src/ofp_playground/agents/llm/model_catalog.py) (`ModelCaps` frozen dataclass) to publish rich OFP manifests (modalities + features + tools keyphrases) for 10 known models (3 OpenAI, 4 Anthropic, 3 Google). Unknown models fall back to a minimal text-in/text-out manifest.
 
 ### Coding Agents
 

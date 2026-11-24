@@ -60,6 +60,22 @@ python examples/asp_live.py --run-paid --model YOUR_MODEL_ID
 
 Set `OPENAI_API_KEY` in the environment. The example uses the shared session, actual floor grant and ASP work instrumentation. It caps output at 128 tokens, disables application and SDK retries, sets a 15-second transport timeout and a 30-second local session wait. These are request limits, not a guaranteed cost cap or remote cancellation guarantee. The SDK timeout/retry options follow the [official Python reference](https://developers.openai.com/api/reference/python). This example has provider-free/default-path checks; a paid run is deliberately opt-in.
 
+## Shared ASP servers
+
+The ASP project publishes a reference status server (`implementations/python-status-server` in [AgentStatusProtocol/spec](https://github.com/AgentStatusProtocol/spec)); a shared test instance runs on a free hosting tier. It uses one bearer token for every caller and takes the reporter role from each event's `source`. OFPlayground reads the same `ASP_SERVER` and `ASP_TOKEN` variables as its example clients. Put them in the environment or in `.env` (gitignored); the token is never accepted on the command line and is only sent in the `Authorization` header.
+
+```sh
+ofp-playground governance                                 # list agents (server from ASP_SERVER)
+ofp-playground governance AGENT_ID quarantined            # operator: quarantine one agent
+ofp-playground governance AGENT_ID normal                 # release it
+```
+
+States are `normal`, `sandboxed`, `quarantined`, `policy-violation` and `under-review`. As in the reference `governance.py`, the command reads the current value first and uses the current second as `seq`; the server ignores an operator event whose `seq` is not higher than the previous one, so one retry follows a short wait. The first request can take about a minute while a sleeping free instance starts. Nonlocal servers must use HTTPS.
+
+**Mirror a session.** With `OFP_ASP_MIRROR=1` (plus `ASP_SERVER`/`ASP_TOKEN`), every terminal, web and Canvas session also copies its validated status events to that server. The local monitor stays authoritative and the Canvas dock is unchanged. Mirrored agent IDs get the prefix `urn:agent:ofplayground:` (override with `OFP_ASP_MIRROR_PREFIX`) so they do not collide with other participants; the local `ext` fields (speaker URIs, session IDs) are not sent. Configured agent names are. A slow, sleeping or failing shared server never blocks or fails the session: mirroring is best effort and drops events it cannot deliver.
+
+On a shared server everyone with the token can read and change agent state. Change only agents you run, and keep the token private. Reporting governance does not enforce it: a mirrored agent is restricted only by this runtime's own quarantine, not by a remote operator's assertion.
+
 ## Service lifecycle and trust
 
 The first instrumented session starts or reuses the independent monitor on `127.0.0.1:8787`. Closing the runner does not stop that monitor: it can still infer liveness failure. Run `ofp-status-server --help` for explicit service configuration. Credentials and the journal live in `~/.ofp-playground/status`; secrets never go in browser URLs or ASP events. File ownership is restricted on POSIX; Windows uses the user's profile directory. This is a local trust profile, not tenant isolation.

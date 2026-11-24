@@ -18,6 +18,15 @@ API keys are resolved in this order:
 | `GOOGLE_API_KEY` | Google Gemini |
 | `HF_API_KEY` | HuggingFace Inference API |
 
+Shared ASP status servers (see [ASP · shared servers](asp.md#shared-asp-servers)):
+
+| Variable | Purpose |
+|----------|---------|
+| `ASP_SERVER` | Base URL of a shared ASP status server (HTTPS unless loopback) |
+| `ASP_TOKEN` | Bearer token for that server; never passed on the command line |
+| `OFP_ASP_MIRROR` | `1` copies every session's status events to `ASP_SERVER` |
+| `OFP_ASP_MIRROR_PREFIX` | Agent ID prefix for mirrored agents (default `urn:agent:ofplayground:`) |
+
 ### `.env` File
 
 Place a `.env` file in the project root:
@@ -43,7 +52,7 @@ google = "AIza..."
 huggingface = "hf_..."
 
 [defaults]
-llm_model_anthropic = "claude-haiku-4-5-20251001"
+llm_model_anthropic = "claude-haiku-5-5"
 llm_model_openai = "gpt-5.4-nano"
 llm_model_google = "gemini-3.1-flash-lite"
 llm_model_huggingface = "MiniMaxAI/MiniMax-M2.7"
@@ -63,7 +72,7 @@ timeout_seconds = 30
 
 | Provider | Default Model |
 |----------|---------------|
-| Anthropic | `claude-haiku-4-5-20251001` |
+| Anthropic | `claude-haiku-5-5` |
 | OpenAI | `gpt-5.4-nano` |
 | Google | `gemini-3.1-flash-lite` |
 | HuggingFace | `MiniMaxAI/MiniMax-M2.7` |
@@ -72,7 +81,7 @@ timeout_seconds = 30
 
 | Provider | Default Model |
 |----------|---------------|
-| Anthropic | `claude-haiku-4-5-20251001` |
+| Anthropic | `claude-haiku-5-5` |
 | OpenAI | `gpt-4o-mini` |
 | Google | `gemini-3-flash-preview` |
 
@@ -183,8 +192,8 @@ class ApiKeysConfig:
 
 @dataclass
 class DefaultsConfig:
-    llm_model_anthropic: str = "claude-haiku-4-5-20251001"
-    vision_model_anthropic: str = "claude-haiku-4-5-20251001"
+    llm_model_anthropic: str = "claude-haiku-5-5"
+    vision_model_anthropic: str = "claude-haiku-5-5"
     llm_model_openai: str = "gpt-5.4-nano"
     image_model_openai: str = "gpt-5.4"
     vision_model_openai: str = "gpt-4o-mini"

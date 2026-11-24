@@ -38,7 +38,7 @@ Floor and orchestrator events (assignments, round boundaries, auto-accepts, the 
 
 Launch the visual canvas (FastAPI + React, `pip install -e ".[canvas]"`). `--policy`, `--agent`, `--remote`, `--topic`, `--max-turns`, `--no-human`, `--human-name` and `--show-floor-events` pre-populate the graph. Agent `-timeout` / `-max-retries` / `-max-tokens` flags are carried as node fields. Press Run to start. `--host` must be a loopback address; `--port` defaults to `8765`; `--open/--no-open` controls the browser.
 
-### `ofp-playground agents` / `personas` / `models` / `status`
+### `ofp-playground agents` / `personas` / `models` / `status` / `governance`
 
 | Command | Purpose |
 |---------|---------|
@@ -46,6 +46,7 @@ Launch the visual canvas (FastAPI + React, `pip install -e ".[canvas]"`). `--pol
 | `personas [SEARCH] [--preview] [--json]` | Search the `@category/slug` persona library; `--preview` shows the resolved prompt |
 | `models [--json]` | Configured provider model choices (never prints keys) |
 | `status [--watch] [--json] [--agent NAME]` | Read authenticated ASP status observations (see [ASP](asp.md)) |
+| `governance [AGENT_ID STATE] [--server URL] [--json]` | List agents on a shared ASP server, or set one agent's governance as an operator (token from `ASP_TOKEN`; see [ASP](asp.md#shared-asp-servers)) |
 
 ### `ofp-playground validate`
 
