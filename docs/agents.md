@@ -108,7 +108,7 @@ Given `floor_policy` (the web and canvas sessions pass the session policy), it t
 
 **File**: `src/ofp_playground/agents/llm/anthropic.py`  
 **Provider**: Anthropic  
-**Default model**: `claude-haiku-4-5-20251001`  
+**Default model**: `claude-haiku-5-5`  
 **API**: `client.messages.create()`
 
 ### OpenAIAgent
@@ -244,7 +244,7 @@ Uses Google Lyria RealTime streaming API:
 
 **File**: `src/ofp_playground/agents/llm/anthropic_vision.py`  
 **CLI type**: `anthropic:image-to-text`  
-**Default model**: `claude-haiku-4-5-20251001`
+**Default model**: `claude-haiku-5-5`
 
 ### OpenAIVisionAgent
 

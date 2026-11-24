@@ -29,8 +29,8 @@ class ApiKeysConfig:
 
 @dataclass
 class DefaultsConfig:
-    llm_model_anthropic: str = "claude-haiku-4-5-20251001"          # smallest Claude
-    vision_model_anthropic: str = "claude-haiku-4-5-20251001"       # Claude vision (image-to-text)
+    llm_model_anthropic: str = "claude-haiku-5-5"                   # latest Haiku
+    vision_model_anthropic: str = "claude-haiku-5-5"                # Claude vision (image-to-text)
     llm_model_openai: str = "gpt-5.4-nano"                          # smallest GPT-5.4
     image_model_openai: str = "gpt-5.4"                               # model used with image_generation tool
     video_model_openai: str = "sora-2"                              # Sora video generation

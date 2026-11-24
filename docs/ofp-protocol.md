@@ -56,101 +56,43 @@ UtteranceEvent(
 | `audio` | Audio file path | Music cue |
 | `3d` | 3D model reference | (reserved) |
 
-### RequestFloorEvent
+### Floor control events
 
-Agent requests permission to speak.
-
-```python
-RequestFloorEvent(
-    dialogEvent=DialogEvent(
-        speakerUri="tag:...:llm-alice",
-        id="uuid",
-        features={"text": TextFeature(tokens=[Token(value="responding to discussion")])},
-    )
-)
-```
-
-### GrantFloorEvent
-
-FloorManager grants an agent the floor.
+Since OFP 1.0.1/1.1.0, floor events carry no `dialogEvent`. They use the event-level `to` and an optional `reason` (special tokens match `@[a-zA-Z0-9_]+`).
 
 ```python
-GrantFloorEvent(
-    dialogEvent=DialogEvent(
-        speakerUri=FLOOR_MANAGER_URI,
-        id="uuid",
-        features={"text": TextFeature(tokens=[Token(value="You have the floor")])},
-    ),
-    to=BotAgent(speakerUri="tag:...:llm-alice"),
-)
+RequestFloorEvent(reason="responding to discussion")              # agent -> floor
+GrantFloorEvent(to=To(speakerUri="tag:...:llm-alice"),
+                reason="Your turn to speak")                       # floor -> agent
+RevokeFloorEvent(to=To(speakerUri="tag:...:llm-alice"),
+                 reason="@override")                               # @timedOut, @brokenPolicy, @override, @error
+YieldFloorEvent(reason="@complete")                               # @outOfDomain, @complete, @timedOut, @refused, @error
 ```
 
-### RevokeFloorEvent
+A `yieldFloor` from an agent that does not hold the floor is a no-op; see [floor policies](floor-policies.md).
 
-FloorManager revokes the floor from an agent.
+### Manifest events
 
 ```python
-RevokeFloorEvent(
-    dialogEvent=DialogEvent(
-        speakerUri=FLOOR_MANAGER_URI,
-        id="uuid",
-        features={"text": TextFeature(tokens=[Token(value="Floor revoked")])},
-    ),
-    to=BotAgent(speakerUri="tag:...:llm-alice"),
-)
+PublishManifestsEvent(parameters=Parameters({
+    "servicingManifests": [dict(manifest)],
+    "discoveryManifests": [],
+}))
 ```
 
-### YieldFloorEvent
+`getManifests` (with `parameters.recommendScope`: `internal`, `external` or `all`) asks a servicing agent for its manifest; it answers with `publishManifests`.
 
-Agent voluntarily gives up the floor.
+### Conversant lifecycle events
 
-```python
-YieldFloorEvent(
-    dialogEvent=DialogEvent(
-        speakerUri="tag:...:llm-alice",
-        id="uuid",
-        features={"text": TextFeature(tokens=[Token(value="")])},
-    )
-)
-```
+| Event | Direction | Notes |
+|-------|-----------|-------|
+| `invite` | floor -> agent | `to` carries `speakerUri` and `serviceUrl`; optional `parameters.dialogHistory` |
+| `acceptInvite` | agent -> floor | bare event; announced as "joined the conversation" |
+| `declineInvite` | agent -> floor | reason `@outOfDomain`, `@unavailable`, `@refused` or `@error`; the floor removes the agent |
+| `uninvite` | floor -> agent | used by `[KICK]` and removal; reason `@timedOut`, `@brokenPolicy` or `@error` |
+| `bye` | agent -> all | the agent leaves; the floor removes it |
 
-### PublishManifestsEvent
-
-Agent advertises its capabilities (OFP manifest).
-
-```python
-PublishManifestsEvent(
-    dialogEvent=DialogEvent(
-        speakerUri="tag:...:llm-alice",
-        id="uuid",
-        features={"text": TextFeature(tokens=[Token(value="")])},
-    ),
-    manifests=[manifest],
-)
-```
-
-### InviteEvent
-
-FloorManager invites an agent to join the conversation.
-
-```python
-InviteEvent(
-    dialogEvent=DialogEvent(
-        speakerUri=FLOOR_MANAGER_URI,
-        id="uuid",
-        features={"text": TextFeature(tokens=[Token(value="")])},
-    ),
-    to=BotAgent(speakerUri="tag:...:llm-alice", serviceUrl="local://..."),
-)
-```
-
-### UninviteEvent
-
-FloorManager removes an agent from the conversation (used by `[KICK]`).
-
-### DeclineEvent
-
-Agent declines to participate (logged, no action taken).
+The `private` flag on `to` only applies to `utterance` events (a whisper); other event types ignore it. The removed 1.0.0 `context` event and `persistentState` are not used.
 
 ## OFP Manifest
 
@@ -218,7 +160,7 @@ The `MessageBus` routes envelopes based on the `to` field:
 
 The playground's floor control follows OFP conventions:
 
-1. Agent calls `request_floor()` → sends `RequestFloorEvent`
+1. Agent calls `request_floor()` → sends `requestFloor`
 2. FloorController evaluates policy → approves or queues
 3. If approved: FloorManager sends `GrantFloorEvent` to agent
 4. Agent generates response → calls `yield_floor()` → sends `YieldFloorEvent`
@@ -237,10 +179,13 @@ On agent startup:
 
 `RemoteOFPAgent` bridges HTTP OFP endpoints:
 
-1. Send `InviteEvent` → remote responds with manifest
-2. Relay manifest to local bus
+Payloads use schema version `1.1.0` (the [Inter-Agent Message Specification 1.1.0](https://openfloor.dev/protocol/specifications/inter-agent-message), released 2026-01-13).
+
+1. Forward the local `invite` (`to` = `speakerUri` + `serviceUrl` at event level). A `declineInvite` reply is relayed to the floor, which removes the proxy. Any other reply (`acceptInvite`, a hello utterance, nothing, or a network failure) is relayed as `acceptInvite`.
+2. Relay the manifest: from the invite reply when an older agent includes one, otherwise from a `getManifests` → `publishManifests` round trip.
 3. On utterances: POST JSON to remote endpoint, capture response
-4. Forward response as local `UtteranceEvent`
+4. Forward response as local `UtteranceEvent`. A `bye` in the reply is relayed after the answer and the proxy leaves.
+5. A local `uninvite` is forwarded to the remote (best effort) before the proxy stops.
 
 Remote agents follow cascade prevention rules:
 - Remote-to-remote responses are blocked (prevents exponential loops)

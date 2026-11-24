@@ -1,0 +1,94 @@
+{
+  "_title": "Claude Haiku 5.5 roundtable",
+  "_description": "Three Claude Haiku 5.5 agents and Verity, a remote OFP fact-checker that reviews the Engineer's claim, take strict round-robin turns and stop after eight turns. Needs ANTHROPIC_API_KEY (about six short Haiku calls). Verity runs on a third-party host (secondassistant.pythonanywhere.com) and receives the conversation text; if it is unreachable the Haiku agents carry on without it.",
+  "nodes": [
+    {
+      "id": "floor-main",
+      "type": "FloorNode",
+      "data": {
+        "policy": "ROUND_ROBIN",
+        "topic": "Pitch OFP Playground: a canvas where AI agents from different providers take turns on an Open Floor, with live agent status. Build on the previous speaker, keep every turn under 40 words, and include one concrete, checkable fact (for example about the Open Floor Protocol or who maintains it) so the fact-checker has something to verify.",
+        "maxTurns": 8,
+        "noHuman": true,
+        "humanName": "Viewer",
+        "showFloorEvents": false
+      }
+    },
+    {
+      "id": "conv-main",
+      "type": "ConversationNode",
+      "data": {}
+    },
+    {
+      "id": "agent-Strategist",
+      "type": "AgentNode",
+      "data": {
+        "provider": "anthropic",
+        "name": "Strategist",
+        "model": "claude-haiku-5-5",
+        "systemPrompt": "You are Strategist, a product marketer. Name the audience and the problem in plain words. One or two sentences, no lists.",
+        "slug": "",
+        "agentType": ""
+      }
+    },
+    {
+      "id": "agent-Engineer",
+      "type": "AgentNode",
+      "data": {
+        "provider": "anthropic",
+        "name": "Engineer",
+        "model": "claude-haiku-5-5",
+        "systemPrompt": "You are Engineer, a protocol engineer. Ground the pitch in what actually happens: floor grants, open protocols, observable status. State one concrete, checkable fact about the Open Floor Protocol or who maintains it, and only one you are sure of. One or two sentences, no lists.",
+        "slug": "",
+        "agentType": ""
+      }
+    },
+    {
+      "id": "agent-Verity",
+      "type": "AgentNode",
+      "data": {
+        "provider": "remote",
+        "name": "Verity",
+        "remoteTarget": "verity",
+        "model": "",
+        "systemPrompt": "",
+        "slug": "",
+        "agentType": ""
+      }
+    },
+    {
+      "id": "agent-Editor",
+      "type": "AgentNode",
+      "data": {
+        "provider": "anthropic",
+        "name": "Editor",
+        "model": "claude-haiku-5-5",
+        "systemPrompt": "You are Editor. Tighten what the others said into one punchy line and say it. Verity, the fact-checker, speaks just before you: keep a claim it confirmed, drop or fix one it questioned. One or two sentences, no lists.",
+        "slug": "",
+        "agentType": ""
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source": "floor-main",
+      "target": "conv-main"
+    },
+    {
+      "source": "floor-main",
+      "target": "agent-Strategist"
+    },
+    {
+      "source": "floor-main",
+      "target": "agent-Engineer"
+    },
+    {
+      "source": "floor-main",
+      "target": "agent-Verity"
+    },
+    {
+      "source": "floor-main",
+      "target": "agent-Editor"
+    }
+  ]
+}

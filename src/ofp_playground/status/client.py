@@ -10,12 +10,15 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from ofp_playground.status.models import ASPEvent
 from ofp_playground.status.server import DEFAULT_DATA_DIR, load_local_credentials
+
+if TYPE_CHECKING:
+    from ofp_playground.status.remote import RemoteMirror
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +42,8 @@ class StatusConnection:
         # Keep operator assertions ordered across reconnecting runner processes.
         # Nanoseconds fit a signed 64-bit integer; sequence increments per event.
         self._authority_seq = time.time_ns()
+        # Optional best-effort copy to a shared ASP server (OFP_ASP_MIRROR).
+        self.mirror: RemoteMirror | None = None
 
     def start(self) -> None:
         self.worker = asyncio.create_task(self._send(), name="asp:publisher")
@@ -50,6 +55,8 @@ class StatusConnection:
             # Validate before queueing; application strings cannot leak into ASP.
             event = ASPEvent.model_validate(payload)
             self.queue.put_nowait((event.payload(), token))
+            if self.mirror is not None:
+                self.mirror.submit(event.payload())
         except asyncio.QueueFull:
             # Continuing heartbeats after losing task transitions would fabricate
             # reassuring state. Stop all publication and let liveness expire.
@@ -131,6 +138,8 @@ class StatusConnection:
             response = await self.client.post("/v1/events", json=event.payload(),
                                               headers={"Authorization": "Bearer " + token})
             if response.status_code == 202:
+                if self.mirror is not None:
+                    self.mirror.submit(event.payload())
                 return {"acknowledged": True, "cursor": response.json().get("cursor")}
             if 400 <= response.status_code < 500 and response.status_code != 429:
                 return {"acknowledged": False, "error": "status-control-rejected"}
@@ -150,6 +159,8 @@ class StatusConnection:
                     self.problem = "status-service-unavailable"
             self.worker.cancel()
             await asyncio.gather(self.worker, return_exceptions=True)
+        if self.mirror is not None:
+            await self.mirror.close()
         await self.client.aclose()
 
 

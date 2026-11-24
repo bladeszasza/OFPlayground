@@ -53,7 +53,7 @@ class TestMakeBasePayload:
     def test_schema_version(self):
         agent = _make_agent()
         payload = agent._make_base_payload("tag:test:sender")
-        assert payload["openFloor"]["schema"]["version"] == "1.0.0"
+        assert payload["openFloor"]["schema"]["version"] == "1.1.0"
 
     def test_conversation_id_set(self):
         agent = _make_agent()
@@ -140,3 +140,111 @@ class TestUri:
     def test_spaces_replaced_in_uri(self):
         agent = _make_agent("My Agent")
         assert "remote-my-agent" in agent.speaker_uri
+
+
+# ---------------------------------------------------------------------------
+# OFP 1.1.0 envelopes sent to the remote (offline; HTTP is stubbed)
+# ---------------------------------------------------------------------------
+
+class _Recorder:
+    """Stub the HTTP POST and the local bus for one RemoteOFPAgent."""
+
+    def __init__(self, agent, replies):
+        self.posted: list[dict] = []
+        self.local: list = []
+        self._replies = list(replies)
+
+        async def post(payload):
+            self.posted.append(payload)
+            return self._replies.pop(0) if self._replies else []
+
+        async def send(envelope):
+            self.local.append(envelope)
+
+        agent._post_envelope = post
+        agent.send_envelope = send
+
+    def local_types(self) -> list[str]:
+        return [e.eventType for env in self.local for e in env.events]
+
+
+VERITY_HELLO = [{
+    "eventType": "utterance",
+    "to": {"speakerUri": FLOOR_MANAGER_URI, "private": True},
+    "parameters": {"dialogEvent": {"features": {"text": {"tokens": [{"value": "Ready to assist."}]}}}},
+}]
+MANIFEST = [{
+    "eventType": "publishManifests",
+    "parameters": {"servicingManifests": [{"identification": {"conversationalName": "Verity"}}]},
+}]
+
+
+class TestOFP110Envelopes:
+    async def test_invite_puts_to_at_event_level_with_schema_110(self):
+        agent = _make_agent("Verity", url="https://remote.example/ofp")
+        rec = _Recorder(agent, [VERITY_HELLO, MANIFEST])
+        await agent._handle_invite()
+        invite = rec.posted[0]["openFloor"]
+        assert invite["schema"] == {"version": "1.1.0"}
+        event = invite["events"][0]
+        assert event["eventType"] == "invite"
+        assert event["to"] == {"speakerUri": agent.speaker_uri, "serviceUrl": "https://remote.example/ofp"}
+        assert "parameters" not in event
+
+    async def test_manifest_fetched_with_get_manifests_when_invite_reply_has_none(self):
+        agent = _make_agent("Verity")
+        rec = _Recorder(agent, [VERITY_HELLO, MANIFEST])
+        await agent._handle_invite()
+        get = rec.posted[1]["openFloor"]["events"][0]
+        assert get["eventType"] == "getManifests"
+        assert get["parameters"] == {"recommendScope": "internal"}
+        assert rec.local_types() == ["acceptInvite", "publishManifests"]
+
+    async def test_legacy_manifest_in_invite_reply_is_still_relayed(self):
+        agent = _make_agent("Old")
+        rec = _Recorder(agent, [MANIFEST])
+        await agent._handle_invite()
+        assert len(rec.posted) == 1  # no getManifests round trip needed
+        assert rec.local_types() == ["acceptInvite", "publishManifests"]
+
+    async def test_decline_is_relayed_and_stops_the_proxy(self):
+        agent = _make_agent("Busy")
+        agent._running = True
+        rec = _Recorder(agent, [[{"eventType": "declineInvite", "reason": "@unavailable"}]])
+        await agent._handle_invite()
+        assert rec.local_types() == ["declineInvite"]
+        assert rec.local[0].events[0].reason == "@unavailable"
+        assert agent._running is False
+
+    async def test_unreachable_remote_still_accepts(self):
+        agent = _make_agent("Offline")
+        rec = _Recorder(agent, [None, None])
+        await agent._handle_invite()
+        assert rec.local_types() == ["acceptInvite"]
+
+    async def test_bye_in_answer_relays_bye_after_the_answer(self):
+        agent = _make_agent("Brief")
+        agent._running = True
+        agent._pending_text = "hi"
+        agent._pending_sender_uri = "tag:ofp-playground.local,2025:human-user"
+        rec = _Recorder(agent, [VERITY_HELLO + [{"eventType": "bye"}]])
+        await agent._handle_grant_floor()
+        assert rec.local_types() == ["utterance", "yieldFloor", "bye"]
+        assert agent._running is False
+
+    async def test_uninvite_is_forwarded_to_the_remote(self):
+        from openfloor import Conversation, Envelope, Sender, To, UninviteEvent
+
+        agent = _make_agent("Gone", url="https://remote.example/ofp")
+        agent._running = True
+        rec = _Recorder(agent, [[]])
+        await agent._dispatch(Envelope(
+            sender=Sender(speakerUri=FLOOR_MANAGER_URI),
+            conversation=Conversation(id="conv:test"),
+            events=[UninviteEvent(to=To(speakerUri=agent.speaker_uri), reason="@timedOut")],
+        ))
+        event = rec.posted[0]["openFloor"]["events"][0]
+        assert event["eventType"] == "uninvite"
+        assert event["reason"] == "@timedOut"
+        assert event["to"]["serviceUrl"] == "https://remote.example/ofp"
+        assert agent._running is False

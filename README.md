@@ -185,6 +185,15 @@ python -m ruff check src/
 python -m mypy src/
 ```
 
+Canvas browser tests ([`tests/e2e/`](tests/e2e/)) drive a real `ofp-playground canvas` process through an installed Edge or Chrome. They are opt-in and skipped by plain `pytest`:
+
+```powershell
+uv sync --locked --extra dev --extra canvas --extra web --extra e2e
+$env:OFP_E2E = "1"; python -m pytest tests/e2e -v
+```
+
+The offline tier makes no model calls. It runs the ASP showcase and quarantines the stalled agent, checks that a round-robin of demo agents stops on its own at the turn limit, and loads the Haiku preset without running it. Setting `OFP_E2E_LIVE=1` as well runs the **Claude Haiku 5.5 roundtable** preset: three Haiku agents (about six short calls; needs `ANTHROPIC_API_KEY`) plus Verity, a remote OFP fact-checker. Verity runs on a third-party host that receives the conversation text. The test skips if Verity doesn't answer a manifest request within 60 seconds. Each test writes numbered screenshots and a Playwright `trace.zip` to `result/ui-tests/<test>/`. `OFP_E2E_VIDEO=1` also records `session.webm`; that needs `playwright install ffmpeg` first. `OFP_E2E_CHANNEL` selects the browser and `OFP_E2E_HEADED=1` shows it.
+
 Frontend validation: run `npm ci`, `npm test` and `npm run build` from `canvas/frontend`. The checked-in CI matrix covers Windows/Linux and Python 3.12/3.13, plus Node 22.12/24 frontend tests/build/audit. Local evidence and the distinction from remote CI are recorded in the [implementation ledger](docs/implementation-status.md).
 
 | Area | Source |

@@ -15,6 +15,8 @@ from ofp_playground.bus.message_bus import FLOOR_MANAGER_URI, MessageBus
 logger = logging.getLogger(__name__)
 
 REMOTE_URI_TEMPLATE = "tag:ofp-playground.local,2025:remote-{name}"
+# Open Floor Inter-Agent Message Specification version sent to remote agents.
+OFP_SCHEMA_VERSION = "1.1.0"
 
 # Known public OFP agents from https://openfloor.dev/agent-registry
 # slug: (display_name, service_url, synopsis)
@@ -100,6 +102,7 @@ class RemoteOFPAgent(BasePlaygroundAgent):
         self._has_floor = False
         self._pending_text: str | None = None
         self._pending_sender_uri: str | None = None
+        self._remote_said_bye = False
 
     def _now_iso(self) -> str:
         return datetime.now(UTC).isoformat().replace("+00:00", "Z")
@@ -107,7 +110,7 @@ class RemoteOFPAgent(BasePlaygroundAgent):
     def _make_base_payload(self, sender_uri: str, sender_service_url: str = "local://agent") -> dict:
         return {
             "openFloor": {
-                "schema": {"version": "1.0.0"},
+                "schema": {"version": OFP_SCHEMA_VERSION},
                 "conversation": {"id": self._conversation_id},
                 "sender": {
                     "speakerUri": sender_uri,
@@ -117,18 +120,11 @@ class RemoteOFPAgent(BasePlaygroundAgent):
             }
         }
 
-    async def _fetch_and_publish_manifest(self) -> None:
-        """POST inviteEvent to the remote; if it responds with a manifest, relay it to the local bus."""
-        payload = self._make_base_payload(FLOOR_MANAGER_URI, "local://floor-manager")
-        payload["openFloor"]["events"] = [{
-            "eventType": "invite",
-            "parameters": {
-                "to": {
-                    "speakerUri": self.speaker_uri,
-                    "serviceUrl": self._remote_url,
-                }
-            },
-        }]
+    async def _post_envelope(self, payload: dict) -> list[dict] | None:
+        """POST one OFP payload; return the response's events, or None on failure.
+
+        A response with an empty ``events`` list is valid (spec 1.1.0, 2.3).
+        """
         try:
             async with httpx.AsyncClient(timeout=self._timeout, follow_redirects=True) as client:
                 resp = await client.post(
@@ -136,52 +132,103 @@ class RemoteOFPAgent(BasePlaygroundAgent):
                     headers={"Content-Type": "application/json"},
                 )
                 resp.raise_for_status()
-                body = resp.json()
-
-            of_data = body.get("openFloor", {})
-            for event in of_data.get("events", []):
-                if event.get("eventType") != "publishManifests":
-                    continue
-                servicing = event.get("parameters", {}).get("servicingManifests", [])
-                if not servicing:
-                    continue
-                from openfloor import Conversation, Parameters, PublishManifestsEvent, Sender
-                relay = Envelope(
-                    sender=Sender(speakerUri=self.speaker_uri, serviceUrl=self._remote_url),
-                    conversation=Conversation(id=self._conversation_id),
-                    events=[PublishManifestsEvent(
-                        parameters=Parameters({
-                            "servicingManifests": servicing,
-                            "discoveryManifests": [],
-                        })
-                    )],
-                )
-                await self.send_envelope(relay)
-                logger.debug("[%s] Manifest relayed from remote", self._name)
-                return
-
-            logger.debug("[%s] Remote returned no manifest in invite response", self._name)
+                body = resp.json() if resp.content else {}
+        except httpx.TimeoutException:
+            logger.warning("[%s] Remote timed out after %ss", self._name, self._timeout)
+            return None
         except Exception:
-            logger.warning('[%s] Could not fetch manifest from remote: see traceback', self._name, exc_info=True)
+            logger.warning("[%s] Remote request failed: see traceback", self._name, exc_info=True)
+            return None
+        events = (body or {}).get("openFloor", {}).get("events", [])
+        return [event for event in events if isinstance(event, dict)] if isinstance(events, list) else []
+
+    def _floor_manager_payload(self, events: list[dict]) -> dict:
+        payload = self._make_base_payload(FLOOR_MANAGER_URI, "local://floor-manager")
+        payload["openFloor"]["events"] = events
+        return payload
+
+    async def _relay_manifests(self, events: list[dict]) -> bool:
+        """Relay servicing manifests from a publishManifests event to the local bus."""
+        for event in events:
+            if event.get("eventType") != "publishManifests":
+                continue
+            servicing = (event.get("parameters") or {}).get("servicingManifests", [])
+            if not servicing:
+                continue
+            from openfloor import Conversation, Parameters, PublishManifestsEvent, Sender
+            relay = Envelope(
+                sender=Sender(speakerUri=self.speaker_uri, serviceUrl=self._remote_url),
+                conversation=Conversation(id=self._conversation_id),
+                events=[PublishManifestsEvent(
+                    parameters=Parameters({
+                        "servicingManifests": servicing,
+                        "discoveryManifests": [],
+                    })
+                )],
+            )
+            await self.send_envelope(relay)
+            logger.debug("[%s] Manifest relayed from remote", self._name)
+            return True
+        return False
+
+    async def _fetch_and_publish_manifest(self, invite_events: list[dict] | None = None) -> None:
+        """Relay the remote's manifest.
+
+        OFP 1.1.0 servicing agents answer ``getManifests`` with
+        ``publishManifests``. Older agents put the manifest in their invite
+        reply, which is still accepted.
+        """
+        if invite_events and await self._relay_manifests(invite_events):
+            return
+        events = await self._post_envelope(self._floor_manager_payload([{
+            "eventType": "getManifests",
+            "to": {"speakerUri": self.speaker_uri, "serviceUrl": self._remote_url},
+            "parameters": {"recommendScope": "internal"},
+        }]))
+        if not events or not await self._relay_manifests(events):
+            logger.debug("[%s] Remote returned no manifest", self._name)
+
+    async def _send_local(self, event_type: str, reason: str | None = None) -> None:
+        """Send a bare event from this remote's identity to the floor manager."""
+        from openfloor import Conversation, Event, Sender, To
+        await self.send_envelope(Envelope(
+            sender=Sender(speakerUri=self.speaker_uri, serviceUrl=self._remote_url),
+            conversation=Conversation(id=self._conversation_id),
+            events=[Event(eventType=event_type, to=To(speakerUri=FLOOR_MANAGER_URI), reason=reason)],
+        ))
 
     async def _handle_invite(self) -> None:
-        """OFP invite: acknowledge and fetch remote manifest.
+        """OFP 1.1.0 invite: forward it, then accept or decline on the remote's behalf.
+
+        The remote answers with ``acceptInvite`` (often plus a hello utterance)
+        or ``declineInvite``. A reply without either, or no reply, counts as
+        acceptance so an older remote can still be asked on demand.
 
         Floor is NOT requested here — the remote agent only speaks when it has
         an utterance to forward, so request_floor is deferred to _handle_utterance.
         """
-        from openfloor import Conversation, Event, Sender, To
-        accept_env = Envelope(
-            sender=Sender(speakerUri=self.speaker_uri, serviceUrl=self._remote_url),
-            conversation=Conversation(id=self._conversation_id),
-            events=[Event(
-                eventType="acceptInvite",
-                to=To(speakerUri=FLOOR_MANAGER_URI),
-                reason="Ready to participate",
-            )],
-        )
-        await self.send_envelope(accept_env)
-        await self._fetch_and_publish_manifest()
+        invite_events = await self._post_envelope(self._floor_manager_payload([{
+            "eventType": "invite",
+            # 1.1.0: ``to`` is an event-level field and carries the serviceUrl.
+            "to": {"speakerUri": self.speaker_uri, "serviceUrl": self._remote_url},
+        }]))
+        decline = next((e for e in invite_events or [] if e.get("eventType") == "declineInvite"), None)
+        if decline is not None:
+            reason = decline.get("reason") if isinstance(decline.get("reason"), str) else None
+            logger.info("[%s] Remote declined the invite (%s)", self._name, reason or "no reason")
+            await self._send_local("declineInvite", reason or "@refused")
+            self._running = False
+            return
+        await self._send_local("acceptInvite", "Ready to participate")
+        await self._fetch_and_publish_manifest(invite_events)
+
+    async def _notify_remote(self, event_type: str, reason: str | None = None) -> None:
+        """Best-effort uninvite/bye to the remote when it leaves this conversation."""
+        event: dict = {"eventType": event_type,
+                       "to": {"speakerUri": self.speaker_uri, "serviceUrl": self._remote_url}}
+        if reason:
+            event["reason"] = reason
+        await self._post_envelope(self._floor_manager_payload([event]))
 
     async def _post_to_remote(self, text: str, sender_uri: str) -> str | None:
         """POST an utterance to the remote OFP endpoint, return response text."""
@@ -203,32 +250,20 @@ class RemoteOFPAgent(BasePlaygroundAgent):
             },
         }]
 
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout, follow_redirects=True) as client:
-                resp = await client.post(
-                    self._remote_url,
-                    json=payload,
-                    headers={"Content-Type": "application/json"},
-                )
-                resp.raise_for_status()
-                body = resp.json()
-
-            of_data = body.get("openFloor", {})
-            for event in of_data.get("events", []):
-                if event.get("eventType") != "utterance":
-                    continue
-                # Support both formats: parameters.dialogEvent and direct dialogEvent
-                de = event.get("parameters", {}).get("dialogEvent") or event.get("dialogEvent", {})
-                tokens = de.get("features", {}).get("text", {}).get("tokens", [])
-                response_text = " ".join(t.get("value", "") for t in tokens).strip()
-                if response_text:
-                    return response_text
-
-        except httpx.TimeoutException:
-            logger.warning("[%s] Remote timed out after %ss", self._name, self._timeout)
-        except Exception:
-            logger.exception('[%s] Remote error: see traceback', self._name)
-
+        events = await self._post_envelope(payload)
+        if not events:
+            return None
+        if any(event.get("eventType") == "bye" for event in events):
+            self._remote_said_bye = True
+        for event in events:
+            if event.get("eventType") != "utterance":
+                continue
+            # Support both formats: parameters.dialogEvent and direct dialogEvent
+            de = (event.get("parameters") or {}).get("dialogEvent") or event.get("dialogEvent", {})
+            tokens = de.get("features", {}).get("text", {}).get("tokens", [])
+            response_text = " ".join(t.get("value", "") for t in tokens if isinstance(t, dict)).strip()
+            if response_text:
+                return response_text
         return None
 
     def _should_respond(self, sender_uri: str, text: str) -> tuple[bool, str]:
@@ -285,6 +320,11 @@ class RemoteOFPAgent(BasePlaygroundAgent):
             self._pending_text = None
             self._pending_sender_uri = None
             await self.yield_floor()
+            if self._remote_said_bye:
+                # The remote left with its answer (1.1.0 ``bye``): tell the floor.
+                logger.info("[%s] remote said bye — leaving", self._name)
+                await self._send_local("bye")
+                self._running = False
 
     async def _dispatch(self, envelope: Envelope) -> None:
         for event in (envelope.events or []):
@@ -300,6 +340,8 @@ class RemoteOFPAgent(BasePlaygroundAgent):
             elif event_type == "uninvite":
                 logger.info("[%s] received uninvite — stopping", self._name)
                 self._running = False
+                reason = getattr(event, "reason", None)
+                await self._notify_remote("uninvite", reason if isinstance(reason, str) else None)
 
     async def run(self) -> None:
         self._running = True

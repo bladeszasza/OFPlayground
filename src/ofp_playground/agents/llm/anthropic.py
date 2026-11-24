@@ -7,12 +7,17 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import anthropic
 
+from ofp_playground.agents.llm.anthropic_compat import (
+    effort_kwargs,
+    prepare_messages,
+    response_text,
+)
 from ofp_playground.agents.llm.base import BaseLLMAgent
 from ofp_playground.bus.message_bus import MessageBus
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+DEFAULT_MODEL = "claude-haiku-5-5"
 
 
 class AnthropicAgent(BaseLLMAgent):
@@ -51,12 +56,15 @@ class AnthropicAgent(BaseLLMAgent):
         client = self._get_client()
 
         def _call():
+            # Current models think by default: leave room for it, and use low
+            # effort (where the model accepts effort) to keep the check quick.
             response = client.messages.create(
                 model=self._model,
-                max_tokens=10,
+                max_tokens=1024,
                 messages=[{"role": "user", "content": prompt}],
+                **effort_kwargs(self._model, "low"),
             )
-            return response.content[0].text if response.content else "NO"
+            return response_text(response) or "NO"
 
         return await loop.run_in_executor(None, _call)
 
@@ -65,11 +73,10 @@ class AnthropicAgent(BaseLLMAgent):
         loop = asyncio.get_event_loop()
         client = self._get_client()
         system = self._build_system_prompt(participants)
-        messages = list(self._conversation_history[-20:])  # Last 20 messages
-
-        # Ensure messages alternate roles properly for Anthropic
-        if not messages:
-            messages = [{"role": "user", "content": "Please introduce yourself briefly."}]
+        # Last 20 messages, starting and ending on a user turn: current models
+        # reject a request that ends on the assistant's own turn (prefill).
+        messages = prepare_messages(self._conversation_history[-20:],
+                                    opening="Please introduce yourself briefly.")
 
         def _call():
             response = client.messages.create(
@@ -78,6 +85,6 @@ class AnthropicAgent(BaseLLMAgent):
                 system=system,
                 messages=messages,
             )
-            return response.content[0].text if response.content else None
+            return response_text(response) or None
 
         return await loop.run_in_executor(None, _call)

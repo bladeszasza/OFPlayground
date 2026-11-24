@@ -717,6 +717,7 @@ class AnthropicOrchestratorAgent(_OrchestratorBase, AnthropicAgent):
     async def _generate_response(self, participants: list[str]) -> str | None:
         import asyncio
         loop = asyncio.get_event_loop()
+        from ofp_playground.agents.llm.anthropic_compat import prepare_messages
         from ofp_playground.agents.llm.spawn_tools import build_spawn_tools
         from ofp_playground.floor.breakout_tools import (
             build_breakout_tools,
@@ -731,9 +732,8 @@ class AnthropicOrchestratorAgent(_OrchestratorBase, AnthropicAgent):
 
         client = self._get_client()
         system = self._build_system_prompt([])
-        messages = list(self._conversation_history)
-        if not messages:
-            messages = [{"role": "user", "content": "Begin your mission."}]
+        # Start and end on a user turn: current models reject an assistant prefill.
+        messages = prepare_messages(self._conversation_history, opening="Begin your mission.")
 
         spawn_tools = build_spawn_tools(self._settings) if self._settings else []
         memory_store = getattr(self, "_memory_store", None)
