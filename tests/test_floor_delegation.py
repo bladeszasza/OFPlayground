@@ -542,3 +542,63 @@ class TestSurfaceParity:
             help_text = CliRunner().invoke(cli.main, [command, "--help"]).output
             assert "--remote" in help_text, command
             assert "--show-floor-events" in help_text, command
+
+
+# ── Sub-floors tell their agents the policy ─────────────────────────────────
+
+class _ScriptedLLM:
+    """Minimal BaseLLMAgent stand-in that answers every grant with one line."""
+
+    @staticmethod
+    def make(name: str):
+        from ofp_playground.agents.llm.base import BaseLLMAgent
+
+        class Scripted(BaseLLMAgent):
+            async def _generate_response(self, participants):
+                return f"{self.name} idea"
+
+            async def _quick_check(self, prompt):
+                return "YES"
+
+        return Scripted(name=name, synopsis="s", bus=MessageBus(), conversation_id="c")
+
+
+class TestSubFloorPolicy:
+    async def test_breakout_agents_learn_free_for_all(self):
+        from ofp_playground.floor.breakout import run_breakout_session
+
+        agents = [_ScriptedLLM.make("Ana"), _ScriptedLLM.make("Ben")]
+        checks: list[str] = []
+        for agent in agents:
+            async def check(text, _name=agent.name):
+                checks.append(_name)
+                return True
+
+            agent._check_relevance = check
+        result = await run_breakout_session(
+            topic="Name the product", agents=agents, policy=FloorPolicy.FREE_FOR_ALL,
+            parent_conversation_id="conv:test", max_rounds=2,
+        )
+        assert result.round_count >= 2
+        assert all(a.floor_policy == "free_for_all" for a in agents)
+        assert checks  # relevance filter actually ran inside the breakout
+
+    async def test_coding_session_agents_learn_policy(self, tmp_path, monkeypatch):
+        from ofp_playground.floor import coding_session
+
+        seen: dict[str, str | None] = {}
+
+        async def fake_loop(agent, *args):
+            seen[agent.name] = agent.floor_policy
+            await asyncio.Event().wait()
+
+        async def finish(self, topic):
+            return []
+
+        monkeypatch.setattr(coding_session, "_run_coding_agent", fake_loop)
+        monkeypatch.setattr(coding_session.CodingSessionManager, "run_to_completion", finish)
+        await coding_session.run_coding_session(
+            topic="build", agents=[_ScriptedLLM.make("Dev")], policy=FloorPolicy.SEQUENTIAL,
+            parent_conversation_id="conv:test", sandbox_dir=tmp_path, max_rounds=2,
+        )
+        assert seen == {"Dev": "sequential"}

@@ -416,6 +416,10 @@ async def run_breakout_session(
         agent._pending_context = []
         agent._has_floor = False
         agent._pending_floor_request = False
+        # Breakout agents are built outside _spawn_llm_agent; tell them the
+        # sub-floor's policy so e.g. a FREE_FOR_ALL breakout runs the relevance check.
+        if hasattr(agent, "set_floor_policy"):
+            agent.set_floor_policy(policy)
         breakout_fm.register_agent(agent.speaker_uri, agent.name)
         await breakout_bus.register(agent.speaker_uri, agent._queue)
 

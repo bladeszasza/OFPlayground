@@ -895,6 +895,8 @@ async def run_coding_session(
         agent._pending_floor_request = False
         if getattr(agent, "_timeout", None) is None:
             agent._timeout = DEFAULT_CODING_AGENT_TIMEOUT_SECONDS
+        if hasattr(agent, "set_floor_policy"):
+            agent.set_floor_policy(policy)
         session_mgr.register_agent(agent.speaker_uri, agent.name)
         await coding_bus.register(agent.speaker_uri, agent._queue)
 
